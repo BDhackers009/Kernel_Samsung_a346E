@@ -17,6 +17,7 @@ struct sdhci_host;
 DECLARE_HOOK(android_vh_mmc_sdio_pm_flag_set,
 	TP_PROTO(struct mmc_host *host),
 	TP_ARGS(host));
+
 DECLARE_RESTRICTED_HOOK(android_rvh_mmc_suspend,
 	TP_PROTO(struct mmc_host *host),
 	TP_ARGS(host), 1);
