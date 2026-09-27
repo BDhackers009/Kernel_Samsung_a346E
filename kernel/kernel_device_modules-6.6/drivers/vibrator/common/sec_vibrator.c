@@ -1123,7 +1123,7 @@ __visible_for_testing ssize_t enable_show(struct device *dev, struct device_attr
 		ktime_t remain = hrtimer_get_remaining(timer);
 		struct timespec64 t = ns_to_timespec64(remain);
 
-		remaining = t.tv_sec * 1000 + t.tv_nsec / 1000;
+		remaining = t.tv_sec * 1000 + t.tv_nsec / 1000000;
 	}
 	return sprintf(buf, "%d\n", remaining);
 }
