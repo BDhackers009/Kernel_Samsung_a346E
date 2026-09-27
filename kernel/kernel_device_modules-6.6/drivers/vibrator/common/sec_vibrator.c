@@ -721,7 +721,7 @@ __visible_for_testing ssize_t haptic_engine_store(struct device *dev, struct dev
 	if (sscanf(buf, "%6d", &_data) != 1)
 		return count;
 
-	if (_data > PACKET_MAX_SIZE * VIB_PACKET_MAX) {
+	if (_data < 0 || _data > PACKET_MAX_SIZE * VIB_PACKET_MAX) {
 		pr_info("%s, [%d] packet size over\n", __func__, _data);
 		return count;
 	}
@@ -903,7 +903,7 @@ static ssize_t hybrid_haptic_engine_store(struct device *dev,
 	if (sscanf(buf, "%6d", &_data) != 1)
 		return count;
 
-	if (_data > PACKET_MAX_SIZE * VIB_PACKET_MAX) {
+	if (_data < 0 || _data > PACKET_MAX_SIZE * VIB_PACKET_MAX) {
 		pr_info("%s, [%d] packet size over\n", __func__, _data);
 		return count;
 	}
