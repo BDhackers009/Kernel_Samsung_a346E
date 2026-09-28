@@ -27,6 +27,9 @@
 #             "warning: failed / already applied").
 #
 # A push to A346E / Game builds KSUN-DEV without SUSFS.
+#
+# Output: the built Image is dropped into https://github.com/BS1388/AnyKernel3-a34x
+# and the FINAL flashable AnyKernel3 zip is uploaded as the artifact.
 ###############################################################################
 name: Build A346E Kernel
 
@@ -65,6 +68,7 @@ on:
     branches:
       - A346E
       - Game
+
 permissions:
   contents: read
   issues: write
@@ -77,6 +81,7 @@ concurrency:
 env:
   G_EXT: ${{ github.workspace }}/external_deps
   SUSFS_REPO: https://github.com/BS1388/SUSFS.git
+  ANYKERNEL_REPO: https://github.com/BS1388/AnyKernel3-a34x.git
   # workflow_dispatch: whatever the user picked.
   # push: build KSUN-DEV (that is the variant we actually flash).
   KSU_VAR: ${{ github.event.inputs.ksu_variant || (github.event_name == 'push' && 'KSUN-DEV') || 'NO-ROOT' }}
@@ -210,6 +215,14 @@ jobs:
           [ "$MISSING" = "0" ] || exit 1
           VER=$(grep -m1 '#define SUSFS_VERSION' "$D/kernel_patches/include/linux/susfs.h" | sed 's/.*"\(.*\)".*/\1/')
           echo "SUSFS version: ${VER:-unknown} @ $(git -C "$G_EXT/SUSFS" rev-parse --short HEAD)"
+
+      - name: Check AnyKernel3 repo (final zip is built from it)
+        run: |
+          set -eu
+          git clone --depth 1 "$ANYKERNEL_REPO" /tmp/ak3
+          [ -f /tmp/ak3/anykernel.sh ] || { echo "::error::anykernel.sh not found in $ANYKERNEL_REPO"; ls -la /tmp/ak3; exit 1; }
+          echo "AnyKernel3 OK @ $(git -C /tmp/ak3 rev-parse --short HEAD)"
+          echo "--- repo root ---"; ls -A /tmp/ak3 | grep -v '^\.git$' || true
 
       - name: Nothing to fetch (NO-ROOT)
         if: env.KSU_VAR == 'NO-ROOT'
@@ -472,6 +485,9 @@ jobs:
     outputs:
       image_size: ${{ steps.build.outputs.image_size }}
       image_sha: ${{ steps.build.outputs.image_sha }}
+      zip_name: ${{ steps.pack.outputs.zip_name }}
+      zip_size: ${{ steps.pack.outputs.zip_size }}
+      zip_sha: ${{ steps.pack.outputs.zip_sha }}
       artifact: ${{ steps.meta.outputs.artifact }}
       selinux: ${{ steps.meta.outputs.selinux }}
       ksu_tag: ${{ steps.ksu.outputs.ksu_tag }}
@@ -503,7 +519,7 @@ jobs:
           set -eu
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
-            curl wget unzip git rsync ca-certificates \
+            curl wget unzip zip git rsync ca-certificates \
             bc bison flex build-essential \
             libssl-dev libelf-dev libncurses-dev dwarves \
             lz4 zstd cpio libxml2-utils xsltproc \
@@ -526,7 +542,7 @@ jobs:
           CUS=$([ "$CUSTOM_PATCH" = "true" ] && echo custom || echo nocustom)
           SUS=$([ "$SUSFS" = "true" ] && echo susfs || echo nosusfs)
           echo "selinux=$SEL" >> "$GITHUB_OUTPUT"
-          echo "artifact=kernel-image-${KSU_VAR}-${SUS}-${SEL}-${CUS}" >> "$GITHUB_OUTPUT"
+          echo "artifact=A346E-AnyKernel3-${KSU_VAR}-${SUS}-${SEL}-${CUS}" >> "$GITHUB_OUTPUT"
 
       - name: SUSFS - fetch & patch kernel (susfs=true)
         id: susfs
@@ -703,13 +719,52 @@ jobs:
           fi
           ls -lh Image
 
-      - name: Upload Image
+      # Drop the fresh Image into the AnyKernel3 repo and build the final
+      # flashable zip (same command as upstream AnyKernel3's README).
+      - name: Package AnyKernel3 zip
+        id: pack
+        run: |
+          set -eu
+          [ -s Image ] || { echo "::error::Image is missing or empty"; exit 1; }
+          rm -rf AnyKernel3
+          git clone --depth 1 "$ANYKERNEL_REPO" AnyKernel3
+          AK_SHA=$(git -C AnyKernel3 rev-parse --short HEAD)
+          cd AnyKernel3
+          [ -f anykernel.sh ] || { echo "::error::anykernel.sh missing in $ANYKERNEL_REPO"; ls -la; exit 1; }
+
+          # remove any kernel image the repo ships so ONLY the fresh one is flashed
+          for f in Image Image.gz Image.gz-dtb Image.lz4 Image.lz4-dtb Image.bz2 Image.lzma Image.lzo zImage zImage-dtb; do
+            if [ -e "$f" ]; then echo "removing stale $f"; rm -f "$f"; fi
+          done
+          cp -v ../Image ./Image
+
+          SEL=$([ "$PERMISSIVE" = "true" ] && echo permissive || echo enforcing)
+          SUS=$([ "$SUSFS" = "true" ] && echo susfs || echo nosusfs)
+          NAME="A346E-${KSU_VAR}-${SUS}-${SEL}-$(date -u +%Y%m%d-%H%M).zip"
+          mkdir -p ../dist
+          zip -r9 "../dist/$NAME" * -x .git README.md '*placeholder' '*.zip' > /dev/null
+
+          # sanity: the zip must contain our Image and the installer script
+          unzip -Z1 "../dist/$NAME" > /tmp/zip.lst
+          grep -qx 'Image'        /tmp/zip.lst || { echo "::error::Image not inside $NAME"; cat /tmp/zip.lst; exit 1; }
+          grep -qx 'anykernel.sh' /tmp/zip.lst || { echo "::error::anykernel.sh not inside $NAME"; cat /tmp/zip.lst; exit 1; }
+          echo "--- $NAME (AnyKernel3 @ $AK_SHA) ---"; cat /tmp/zip.lst
+
+          {
+            echo "zip_name=$NAME"
+            echo "zip_size=$(du -h "../dist/$NAME" | awk '{print $1}')"
+            echo "zip_sha=$(sha256sum "../dist/$NAME" | cut -c1-16)"
+          } >> "$GITHUB_OUTPUT"
+
+      # The zip is already compressed -> store it as-is (GitHub wraps every
+      # artifact in one more zip on download; unzip once to get the flashable file).
+      - name: Upload flashable zip
         uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.meta.outputs.artifact }}
-          path: Image
+          path: dist/${{ steps.pack.outputs.zip_name }}
           if-no-files-found: error
-          compression-level: 6
+          compression-level: 0
 
       - name: Upload build log (only when the build fails)
         if: failure()
@@ -742,7 +797,8 @@ jobs:
             echo "| SUSFS | \`${SUSFS}\` \`${{ needs.build.outputs.susfs_ver || '-' }}\` @ \`${{ needs.build.outputs.susfs_sha || '-' }}\` |"
             echo "| SELinux | \`${{ needs.build.outputs.selinux || env.PERMISSIVE }}\` |"
             echo "| Image | \`${{ needs.build.outputs.image_size || 'n/a' }}\` sha256:\`${{ needs.build.outputs.image_sha || 'n/a' }}\` |"
-            echo "| Artifact | \`${{ needs.build.outputs.artifact || 'n/a' }}\` (only the Image) |"
+            echo "| Flashable zip | \`${{ needs.build.outputs.zip_name || 'n/a' }}\` (\`${{ needs.build.outputs.zip_size || 'n/a' }}\`, sha256:\`${{ needs.build.outputs.zip_sha || 'n/a' }}\`) |"
+            echo "| Artifact | \`${{ needs.build.outputs.artifact || 'n/a' }}\` |"
             echo ""
             echo "Pipeline: #1 ●──● #2 ●──● #3 ●──● #4 ●──● #5 ●──● #6 ●──● #7"
           } >> "$GITHUB_STEP_SUMMARY"
