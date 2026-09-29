@@ -15,16 +15,19 @@
 #
 # Variants (workflow_dispatch):
 #   ksu_variant = NO-ROOT | KSUN-DEV | KSUN-STABLE
-#     KSUN-DEV    -> KernelSU-Next  dev branch HEAD
-#                    (kernel/setup.sh from .../KernelSU-Next/dev,  arg: dev)
+#     KSUN-DEV    -> KernelSU-Next  dev branch HEAD (susfs=false) or
+#                    pershoot fork dev-susfs (susfs=true)
 #     KSUN-STABLE -> KernelSU-Next  latest stable
 #                    (kernel/setup.sh from .../KernelSU-Next/next, arg: stable)
 #   susfs = true/false
-#     true -> SUSFS from https://github.com/BS1388/SUSFS is applied to the
-#             kernel (50_add_susfs_in_gki-android15-6.6.patch + fs/ + include/)
-#             AND to KernelSU-Next (10_enable_susfs_for_ksu.patch).
-#             SUSFS patches FAIL THE RUN when they do not apply (no more silent
-#             "warning: failed / already applied").
+#     true -> kernel side: SUSFS from https://github.com/BS1388/SUSFS is applied
+#             (50_add_susfs_in_gki-android15-6.6.patch + fs/ + include/).
+#             KernelSU side: the SUSFS-integrated KernelSU-Next fork
+#             pershoot/KernelSU-Next, branch dev-susfs (setup.sh arg: dev-susfs).
+#             10_enable_susfs_for_ksu.patch is NOT used: it is written for
+#             upstream KernelSU and 11 hunks are rejected on KernelSU-Next dev
+#             (verified in a real run). Needs KSUN-DEV (no stable SUSFS fork).
+#             SUSFS patches FAIL THE RUN when they do not apply.
 #
 # A push to A346E / Game builds KSUN-DEV without SUSFS.
 #
@@ -82,6 +85,9 @@ env:
   G_EXT: ${{ github.workspace }}/external_deps
   SUSFS_REPO: https://github.com/BS1388/SUSFS.git
   ANYKERNEL_REPO: https://github.com/BS1388/AnyKernel3-a34x.git
+  # KernelSU-Next fork that already contains SUSFS (used when susfs=true)
+  KSUN_SUSFS_OWNER: pershoot
+  KSUN_SUSFS_BRANCH: dev-susfs
   # workflow_dispatch: whatever the user picked.
   # push: build KSUN-DEV (that is the variant we actually flash).
   KSU_VAR: ${{ github.event.inputs.ksu_variant || (github.event_name == 'push' && 'KSUN-DEV') || 'NO-ROOT' }}
@@ -109,6 +115,9 @@ jobs:
           set -eu
           if [ "$SUSFS" = "true" ] && [ "$KSU_VAR" = "NO-ROOT" ]; then
             echo "::error::SUSFS needs KernelSU - pick KSUN-DEV or KSUN-STABLE (or untick susfs)"; exit 1
+          fi
+          if [ "$SUSFS" = "true" ] && [ "$KSU_VAR" = "KSUN-STABLE" ]; then
+            echo "::error::there is no stable SUSFS-integrated KernelSU-Next - use KSUN-DEV with susfs, or untick susfs for KSUN-STABLE"; exit 1
           fi
           if [ -f "Kernel-6.6/Makefile" ]; then
             REAL_DIR="Kernel-6.6"
@@ -182,7 +191,9 @@ jobs:
         if: env.KSU_VAR != 'NO-ROOT'
         run: |
           set -eu
-          if [ "$KSU_VAR" = "KSUN-DEV" ]; then
+          if [ "$KSU_VAR" = "KSUN-DEV" ] && [ "$SUSFS" = "true" ]; then
+            URL="https://raw.githubusercontent.com/${KSUN_SUSFS_OWNER}/KernelSU-Next/${KSUN_SUSFS_BRANCH}/kernel/setup.sh"
+          elif [ "$KSU_VAR" = "KSUN-DEV" ]; then
             URL="https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh"
           else
             URL="https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh"
@@ -208,8 +219,7 @@ jobs:
           for f in kernel_patches/50_add_susfs_in_gki-android15-6.6.patch \
                    kernel_patches/fs/susfs.c \
                    kernel_patches/include/linux/susfs.h \
-                   kernel_patches/include/linux/susfs_def.h \
-                   kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch; do
+                   kernel_patches/include/linux/susfs_def.h; do
             if [ -f "$D/$f" ]; then echo "OK      $f"; else echo "::error::MISSING $f"; MISSING=1; fi
           done
           [ "$MISSING" = "0" ] || exit 1
@@ -400,9 +410,8 @@ jobs:
 
   # ==========================================================================
   # #5 KernelSU -- resolve the version that #6 will build, and (susfs=true)
-  #    dry-run the SUSFS KernelSU patch against it. 10_enable_susfs_for_ksu is
-  #    written for upstream KernelSU, so THIS is where you find out in one
-  #    minute whether it fits KernelSU-Next.
+  #    check the SUSFS fork of KernelSU-Next (pershoot dev-susfs) against the
+  #    SUSFS kernel side, so an API mismatch shows up in one minute.
   # ==========================================================================
   kernelsu:
     name: "#5 KernelSU"
@@ -416,7 +425,11 @@ jobs:
         run: |
           set -eu
           REPO=https://github.com/KernelSU-Next/KernelSU-Next.git
-          if [ "$KSU_VAR" = "KSUN-DEV" ]; then
+          if [ "$KSU_VAR" = "KSUN-DEV" ] && [ "$SUSFS" = "true" ]; then
+            git clone --branch "$KSUN_SUSFS_BRANCH" "https://github.com/${KSUN_SUSFS_OWNER}/KernelSU-Next.git" /tmp/ksun >/dev/null 2>&1
+            cd /tmp/ksun
+            TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "$KSUN_SUSFS_BRANCH")
+          elif [ "$KSU_VAR" = "KSUN-DEV" ]; then
             git clone --branch dev "$REPO" /tmp/ksun >/dev/null 2>&1
             cd /tmp/ksun
             TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo dev)
@@ -438,22 +451,40 @@ jobs:
           grep -q KSU_VERSION_FALLBACK kernel/Kbuild \
             || echo "::warning::kernel/Kbuild has no KSU_VERSION_FALLBACK - the v0.0.1 fix may need updating"
 
-      - name: SUSFS patch dry-run on KernelSU-Next (susfs=true)
+      # The SUSFS fork of KernelSU-Next (pershoot dev-susfs) already contains the
+      # KernelSU-side SUSFS code, so 10_enable_susfs_for_ksu.patch is not used.
+      # Instead check that the fork and the SUSFS kernel side (BS1388/SUSFS)
+      # speak the same API BEFORE spending an hour on the compile.
+      - name: SUSFS <-> KernelSU-Next compatibility check (susfs=true)
         if: env.SUSFS == 'true' && env.KSU_VAR != 'NO-ROOT'
         run: |
           set -eu
           mkdir -p "$G_EXT"
           git clone --depth 1 "$SUSFS_REPO" "$G_EXT/SUSFS"
-          P=$(find "$G_EXT/SUSFS" -type f -name '10_enable_susfs_for_ksu.patch' -not -path '*/.git/*' | head -n1)
-          [ -n "$P" ] || { echo "::error::10_enable_susfs_for_ksu.patch not found in $SUSFS_REPO"; exit 1; }
+          P=$(find "$G_EXT/SUSFS" -type f -name '50_add_susfs_in_gki-android15-6.6.patch' -not -path '*/.git/*' | head -n1)
+          [ -n "$P" ] || { echo "::error::50_add_susfs_in_gki-android15-6.6.patch not found in $SUSFS_REPO"; exit 1; }
+          D=$(dirname "$(dirname "$P")")
           cd /tmp/ksun
-          if patch -p1 --dry-run --forward --batch < "$P" > /tmp/ksu_susfs.log 2>&1; then
-            cat /tmp/ksu_susfs.log
-            echo "OK - 10_enable_susfs_for_ksu.patch applies to KernelSU-Next ($KSU_VAR)"
+
+          grep -qE '^config KSU_SUSFS[[:space:]]*$' kernel/Kconfig \
+            || { echo "::error::KernelSU-Next fork has no KSU_SUSFS symbol in kernel/Kconfig - not a SUSFS build"; exit 1; }
+          echo "Kconfig symbols in the fork:"; grep -E '^config KSU_SUSFS' kernel/Kconfig | sed 's/^/  /'
+
+          # susfs_* identifiers the KernelSU side uses ...
+          grep -rhoE '\bsusfs_[a-z0-9_]+' kernel --include=*.c --include=*.h | sort -u > /tmp/ksu_syms
+          # ... and the ones the kernel side (BS1388/SUSFS) declares/defines
+          cat "$D"/kernel_patches/include/linux/susfs*.h "$D"/kernel_patches/fs/susfs.c \
+            | grep -oE '\bsusfs_[a-z0-9_]+' | sort -u > /tmp/kern_syms
+          # identifiers the fork defines itself do not count as missing
+          MISSING=$(comm -23 /tmp/ksu_syms /tmp/kern_syms | while read -r sym; do
+            grep -rqE "(^|[^a-z0-9_])${sym}[[:space:]]*\(" kernel --include=*.c --include=*.h \
+              && ! grep -rqE "^[a-z_ \*]+[[:space:]\*]${sym}[[:space:]]*\(" kernel --include=*.c --include=*.h && echo "$sym"
+          done || true)
+          if [ -n "$MISSING" ]; then
+            echo "::warning::KernelSU-Next calls susfs_* functions that BS1388/SUSFS does not provide (possible version mismatch - the build may fail at compile/link):"
+            echo "$MISSING" | sed 's/^/  /'
           else
-            cat /tmp/ksu_susfs.log
-            echo "::error::10_enable_susfs_for_ksu.patch does NOT apply to KernelSU-Next ($KSU_VAR). It is written for upstream KernelSU (tiann) - the file layout / code differs."
-            exit 1
+            echo "OK - every susfs_* function used by the fork exists on the kernel side"
           fi
 
       - name: Defconfig plan
@@ -463,7 +494,7 @@ jobs:
           if [ "$KSU_VAR" = "NO-ROOT" ]; then
             echo "  (none)"
           elif [ "$SUSFS" = "true" ]; then
-            echo "  CONFIG_KSU=y, CONFIG_MODULES=y + every CONFIG_KSU_SUSFS_* symbol found in the patched Kconfig (no KPROBES needed, SUSFS uses inline hooks)"
+            echo "  CONFIG_KSU=y, CONFIG_MODULES=y + every CONFIG_KSU_SUSFS_* symbol found in the fork's Kconfig (no KPROBES needed, SUSFS uses inline hooks)"
           else
             echo "  CONFIG_KSU=y, CONFIG_KPROBES=y, CONFIG_KPROBE_EVENTS=y, CONFIG_MODULES=y"
           fi
@@ -471,7 +502,7 @@ jobs:
           {
             echo "### #5 KernelSU - OK"
             echo "- KernelSU-Next (\`${KSU_VAR}\`): \`${{ steps.resolve.outputs.ksu_tag || 'n/a' }}\` (\`${{ steps.resolve.outputs.ksu_code || 'n/a' }}\`) @ \`${{ steps.resolve.outputs.ksu_sha || 'n/a' }}\`"
-            echo "- SUSFS on KernelSU-Next: \`${SUSFS}\`"
+            echo "- SUSFS: \`${SUSFS}\` (KernelSU-Next source: \`$([ "$SUSFS" = "true" ] && echo "${KSUN_SUSFS_OWNER}/${KSUN_SUSFS_BRANCH}" || echo official)\`)"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ==========================================================================
@@ -592,9 +623,15 @@ jobs:
           rm -rf KernelSU-Next
           case "$KSU_VAR" in
             KSUN-DEV)
-              # setup.sh does a FRESH clone every run -> always the newest dev HEAD.
-              curl -LSs --retry 3 "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" -o /tmp/ksun_setup.sh
-              bash /tmp/ksun_setup.sh dev
+              if [ "$SUSFS" = "true" ]; then
+                # SUSFS-integrated fork; its setup.sh fetches the same fork
+                curl -LSs --retry 3 "https://raw.githubusercontent.com/${KSUN_SUSFS_OWNER}/KernelSU-Next/${KSUN_SUSFS_BRANCH}/kernel/setup.sh" -o /tmp/ksun_setup.sh
+                bash /tmp/ksun_setup.sh "$KSUN_SUSFS_BRANCH"
+              else
+                # setup.sh does a FRESH clone every run -> always the newest dev HEAD.
+                curl -LSs --retry 3 "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" -o /tmp/ksun_setup.sh
+                bash /tmp/ksun_setup.sh dev
+              fi
               ;;
             KSUN-STABLE)
               # same as: curl -LSs ".../KernelSU-Next/next/kernel/setup.sh" | bash -s stable
@@ -611,21 +648,10 @@ jobs:
           KSU_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
           if [ "$SUSFS" = "true" ]; then
-            P="$SUSFS_DIR/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-            [ -f "$P" ] || { echo "::error::$P missing"; exit 1; }
-            if ! patch -p1 --forward --batch --no-backup-if-mismatch < "$P" > /tmp/ksu_susfs.log 2>&1; then
-              cat /tmp/ksu_susfs.log
-              echo "::error::10_enable_susfs_for_ksu.patch failed on KernelSU-Next - rejected hunks:"
-              find . -name '*.rej' | head -n 30
-              exit 1
-            fi
-            cat /tmp/ksu_susfs.log
-            if find . -name '*.rej' | grep -q .; then
-              echo "::error::SUSFS KernelSU patch left .rej files"; find . -name '*.rej'; exit 1
-            fi
+            # the fork already has SUSFS - just verify, do NOT apply 10_enable_susfs_for_ksu.patch
             grep -qE '^config KSU_SUSFS[[:space:]]*$' kernel/Kconfig \
-              || { echo "::error::kernel/Kconfig has no KSU_SUSFS symbol after patching"; exit 1; }
-            echo "KernelSU-Next patched with SUSFS"
+              || { echo "::error::kernel/Kconfig has no KSU_SUSFS symbol - the fork is not SUSFS-enabled"; exit 1; }
+            echo "KernelSU-Next (SUSFS fork ${KSUN_SUSFS_OWNER}/${KSUN_SUSFS_BRANCH}) has SUSFS built in"
           fi
 
           # Fix "v0.0.1 (1-2)" in the manager: build_kernel.sh copies the tree
