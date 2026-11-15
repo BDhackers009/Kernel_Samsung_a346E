@@ -4,6 +4,8 @@
 # Options (env vars, set by .github/workflows/build_kernel.yml):
 #   PERMISSIVE=true           apply Permissive/selinux-make-permissive.patch
 #   CUSTOM_PATCH=true         also apply patch/*.patch
+#   PERF_FLAVOR=true          append kernel/configs/perf.config (drops UBSAN,
+#                             KFENCE, PAGE_OWNER, SCHEDSTATS from the Image)
 #   KSU_VERSION, KSU_GIT_TAG  KernelSU-Next version, used when no git checkout is found
 #
 # kernel-6.6/ stays pristine upstream. Device fixes are patches in
@@ -22,6 +24,13 @@ DEVICE_MODULES_DIR="kernel_device_modules-6.6"
 OUT_BASE="${ROOT_DIR}/out/target/product/${PRODUCT}/obj"
 OUT_BASE_REL="../out/target/product/${PRODUCT}/obj"   # relative to kernel/
 DEFCONFIG_OVERLAYS="mt6877_overlay.config mt6877_teegris_5_overlay.config disable_module_sig.config"
+
+# Perf flavour: append perf.config so whole-kernel debug instrumentation
+# (UBSAN bounds checks, KFENCE, PAGE_OWNER, SCHEDSTATS) is compiled out.
+# The default build is unchanged whether PERF_FLAVOR is unset or false.
+if [ "${PERF_FLAVOR:-false}" = "true" ]; then
+  DEFCONFIG_OVERLAYS="${DEFCONFIG_OVERLAYS} perf.config"
+fi
 SIG_FRAGMENT="${DEVICE_MODULES_DIR}/kernel/configs/disable_module_sig.config"
 IDENT='[a-zA-Z_][a-zA-Z0-9_]*'
 
@@ -866,6 +875,41 @@ collect_image() {
   ok "تمام! فایل Image در $dest آماده است."
 }
 
+# Print the options that matter for this project from the config that was
+# actually built, and fail when a requested flavour silently did not take
+# effect (merge_config order is easy to get wrong and a silent drop costs a
+# 50 minute rebuild).
+verify_build_config() {
+  local cfg opt val failed=0
+
+  cfg="$(find "${ROOT_DIR}/out" -name .config -type f -print 2>/dev/null | head -n1 || true)"
+  if [ -z "$cfg" ]; then
+    warn "no built .config found under out/ - skipping config verification"
+    return 0
+  fi
+
+  log "Built config: $cfg"
+  for opt in CONFIG_UBSAN CONFIG_UBSAN_BOUNDS CONFIG_KFENCE CONFIG_PAGE_OWNER \
+             CONFIG_SCHEDSTATS CONFIG_LRU_GEN_ENABLED CONFIG_KSU CONFIG_MODULE_SIG; do
+    val="$(sed -n "s/^${opt}=//p" "$cfg" | head -n1)"
+    if [ -z "$val" ] && grep -qx "# ${opt} is not set" "$cfg"; then
+      val="n"
+    fi
+    printf '  %-30s %s\n' "$opt" "${val:-?}"
+  done
+
+  if [ "${PERF_FLAVOR:-false}" = "true" ]; then
+    for opt in CONFIG_UBSAN CONFIG_UBSAN_BOUNDS CONFIG_KFENCE CONFIG_PAGE_OWNER CONFIG_SCHEDSTATS; do
+      if grep -q "^${opt}=y" "$cfg"; then
+        echo "  ERROR: ${opt} is still enabled in the perf flavour" >&2
+        failed=1
+      fi
+    done
+    [ "$failed" = "0" ] || die "perf flavour did not take effect (perf.config not merged?)"
+    ok "perf flavour confirmed: UBSAN/KFENCE/PAGE_OWNER/SCHEDSTATS are off"
+  fi
+}
+
 # ---- Main -------------------------------------------------------------------
 
 main() {
@@ -880,6 +924,7 @@ main() {
   generate_build_config
   run_kernel_build
   collect_image
+  verify_build_config
 
   log "=== Build Completed Successfully ==="
 }

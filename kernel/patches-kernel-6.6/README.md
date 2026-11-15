@@ -96,6 +96,32 @@ only exports the vanilla behaviour under those names, plus `kdp_get_usecount`,
 `kdp_enable = false`. The whole block is wrapped in `#ifndef CONFIG_KDP_CRED`,
 so a real KDP tree is unaffected.
 
+### `0006` … `0012` — upstream stable fixes backported from 6.6.145–6.6.162
+
+These are plain upstream commits, taken from the stable tree and re-checked
+against this 6.6.144 base with `git apply --check`. They are only the ones that
+both apply cleanly **and** are independently correct (no missing companion
+commit). Everything else from that range is listed in the research folder.
+
+| patch | upstream commit | fixes |
+|---|---|---|
+| `0006-arm64-percpu-this_cpu_and-mask.patch` | `df4920b13334` | `this_cpu_and()` generated the wrong mask |
+| `0007-arm64-percpu-this_cpu_write-cast.patch` | `9397a97eba3d` | `this_cpu_write()` truncating its argument |
+| `0008-f2fs-nat-entry-dataloss.patch` | `0645fa4d48e9` | **data loss**: fsync of a new file racing a checkpoint |
+| `0009-mm-rmap-anonvma-publish-barrier.patch` | `465e222815c8` | anon_vma published before init (arm64 hung task) |
+| `0010-module-kmod-dup-uaf.patch` | `a3205bd1f218` | use-after-free in boot-time duplicate module requests |
+| `0011-sched-fair-runnable-sum-overflow.patch` | `69fafae4eb2c` | `runnable_sum` u32 overflow → div-by-zero panic |
+| `0012-entry-seccomp-tsync-bypass.patch` | `23001ee5d863` | seccomp filter bypass after ptrace + TSYNC |
+
+Not included on purpose:
+
+* `binder: fix UAF in binder_thread_release()` / `binder_free_transaction()` —
+  **already present** in this AOSP tree (the transaction lock plus the
+  `target_thread` `tmp_ref` pinning are both there); the stable patch no longer
+  applies because the code moved past it.
+* f2fs / blk-mq / fuse / writeback / ufs / proc-ptrace fixes from the same range
+  — they need a real rebase against 6.6.144, or a full tree bump to 6.6.162.
+
 ## Adding a new fix
 
 ```bash

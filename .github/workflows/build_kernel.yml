@@ -21,6 +21,13 @@ on:
         type: boolean
         required: true
         default: false
+      flavor:
+        description: "Build flavour"
+        type: choice
+        options:
+          - default
+          - perf
+        default: default
   push:
     branches: [A346E]
   pull_request:
@@ -36,6 +43,8 @@ env:
   KSU_VAR: ${{ github.event.inputs.ksu_variant || (github.event_name == 'push' && 'KSUN') || 'NO-ROOT' }}
   PERMISSIVE: ${{ github.event.inputs.permissive || 'false' }}
   CUSTOM_PATCH: ${{ github.event.inputs.custom_patches || 'false' }}
+  FLAVOR: ${{ github.event.inputs.flavor || 'default' }}
+  PERF_FLAVOR: ${{ (github.event.inputs.flavor == 'perf') && 'true' || 'false' }}
 jobs:
   detect:
     name: "#1 Checkout & Detect"
@@ -68,6 +77,7 @@ jobs:
             echo "| KSU variant | \`${KSU_VAR}\` |"
             echo "| SELinux | \`${SEL}\` |"
             echo "| Extra patches (patch/*.patch) | \`${CUSTOM_PATCH}\` |"
+            echo "| Flavour | \`${FLAVOR}\` |"
             echo "| Kernel tree | \`${REAL_DIR}\` (\`${VER}\`) |"
             echo "| Package | \`AnyKernel3-a34x\` |"
             echo "| Commit | \`${GITHUB_SHA:0:12}\` |"
@@ -284,9 +294,11 @@ jobs:
           [ -n "$REAL_DIR" ] || { echo "::error::no kernel tree found"; exit 1; }
           SEL=$([ "$PERMISSIVE" = "true" ] && echo permissive || echo enforcing)
           CUS=$([ "$CUSTOM_PATCH" = "true" ] && echo custom || echo nocustom)
+          FLV=$([ "$PERF_FLAVOR" = "true" ] && echo perf || echo stock)
           { echo "REAL_DIR=$REAL_DIR"; echo "G_KERNEL=$GITHUB_WORKSPACE/$REAL_DIR"; } >> "$GITHUB_ENV"
           echo "selinux=$SEL" >> "$GITHUB_OUTPUT"
-          echo "artifact=AnyKernel3-A346E-${KSU_VAR}-${SEL}-${CUS}" >> "$GITHUB_OUTPUT"
+          echo "flavor=$FLV" >> "$GITHUB_OUTPUT"
+          echo "artifact=AnyKernel3-A346E-${KSU_VAR}-${SEL}-${CUS}-${FLV}" >> "$GITHUB_OUTPUT"
       - name: Add KernelSU
         id: ksu
         if: env.KSU_VAR != 'NO-ROOT'
@@ -386,7 +398,7 @@ jobs:
         run: |
           set -eu
           chmod +x ./build_kernel.sh
-          echo "PERMISSIVE=$PERMISSIVE  CUSTOM_PATCH=$CUSTOM_PATCH  KSU_VAR=$KSU_VAR"
+          echo "PERMISSIVE=$PERMISSIVE  CUSTOM_PATCH=$CUSTOM_PATCH  KSU_VAR=$KSU_VAR  PERF_FLAVOR=$PERF_FLAVOR"
           if ! bash ./build_kernel.sh 2>&1 | tee build.log; then
             echo "::error::build_kernel.sh failed - see the build-log artifact"
             tail -n 60 build.log || true
@@ -457,6 +469,7 @@ jobs:
           | KSU | \`${KSU_VAR}\` |
           | permissive | \`${PERMISSIVE}\` |
           | extra patches | \`${CUSTOM_PATCH}\` |
+          | flavour | \`${FLAVOR}\` |
           The \`build-log-${{ github.run_id }}\` artifact of that run has the full log.
           EOF
           gh issue create --title "Build failed #${{ github.run_id }} [${KSU_VAR}]" --body-file issue.md || true
