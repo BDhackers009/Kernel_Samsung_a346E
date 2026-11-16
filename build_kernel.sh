@@ -4,7 +4,8 @@
 # Options (env vars, set by .github/workflows/build_kernel.yml):
 #   PERMISSIVE=true           apply Permissive/selinux-make-permissive.patch
 #   CUSTOM_PATCH=true         also apply patch/*.patch
-#   DROIDSPACES=true          append kernel/configs/droidspaces.config
+#   DROIDSPACES=true          append
+#                             kernel/kernel_device_modules-6.6/kernel/configs/droidspaces.config
 #                             (IPC/PID namespaces, devtmpfs, netfilter, ...)
 #   KSU_VERSION, KSU_GIT_TAG  KernelSU-Next version, used when no git checkout is found
 #
@@ -896,8 +897,9 @@ collect_debug() {
     fi
   done < <(find "$dist" "${ROOT_DIR}/out" -name .config -type f 2>/dev/null | sort)
   if [ -n "$f" ]; then
-    cp -f "$f" "$dst/.config"
-    ok "  .config <- ${f#"${ROOT_DIR}/"}"
+    # not ".config": upload-artifact skips dotfiles unless include-hidden-files
+    cp -f "$f" "$dst/kernel.config"
+    ok "  kernel.config <- ${f#"${ROOT_DIR}/"}"
   else
     warn "  .config not found (no file with CONFIG_ARM64=y)"
   fi

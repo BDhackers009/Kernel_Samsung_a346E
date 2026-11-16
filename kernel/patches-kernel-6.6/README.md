@@ -130,5 +130,17 @@ disappear.
 |---|---|
 | `Permissive/selinux-make-permissive.patch` | workflow input `permissive: true` |
 | `patch/*.patch` | workflow input `custom_patches: true` |
+| `kernel/kernel_device_modules-6.6/kernel/configs/droidspaces.config` | workflow input `droidspaces: true` (`DROIDSPACES=true`) |
 
-Both are handled by `build_kernel.sh → apply_optional_patches`.
+The first two are handled by `build_kernel.sh → apply_optional_patches`.
+
+The DroidSpaces overlay is a config fragment, not a patch: `build_kernel.sh`
+appends it to `DEFCONFIG_OVERLAYS` so `merge_config.sh` applies it after
+`gki_defconfig` and `mediatek-bazel_defconfig`. It enables the GKI-safe set from
+the DroidSpaces documentation (IPC/PID namespaces, `DEVTMPFS`, `USER_NS`,
+macvlan, IPv6 NAT, UFW/Fail2ban matches, tmpfs xattr). `CONFIG_SYSVIPC` relies on
+`0005-GKI-below-fix_sysvipc_kabi.patch` above: that patch moves `sysvsem` /
+`sysvshm` into Android KABI padding so `struct task_struct` keeps its layout and
+the stock vendor modules still load. `CFS_BANDWIDTH` and `CGROUP_PIDS` are
+deliberately left off — no padding covers them and enabling either means
+rebuilding every module on the device.

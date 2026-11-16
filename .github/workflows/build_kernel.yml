@@ -207,9 +207,32 @@ jobs:
             for p in "${EXTRA[@]}"; do check_patch "$p" || FAIL=1; done
           fi
           [ "$FAIL" = "0" ] || exit 1
+      - name: DroidSpaces fragment (fast check)
+        if: env.DROIDSPACES == 'true'
+        run: |
+          set -eu
+          F=kernel/kernel_device_modules-6.6/kernel/configs/droidspaces.config
+          [ -f "$F" ] || { echo "::error::$F is missing"; exit 1; }
+          grep -q 'droidspaces.config' build_kernel.sh \
+            || { echo "::error::build_kernel.sh does not append droidspaces.config"; exit 1; }
+          FAIL=0
+          N=0
+          for opt in $(grep -E '^CONFIG_[A-Z0-9_]+=y$' "$F" | cut -d= -f1); do
+            sym=${opt#CONFIG_}
+            N=$((N + 1))
+            if grep -rqs "^config ${sym}$" --include='Kconfig*' kernel/kernel_device_modules-6.6 kernel-6.6; then
+              echo "OK      ${sym} exists in Kconfig"
+            else
+              echo "::error::${sym} has no Kconfig entry (typo?)"
+              FAIL=1
+            fi
+          done
+          [ "$N" -ge 10 ] || { echo "::error::only $N options parsed from $F"; FAIL=1; }
+          [ "$FAIL" = "0" ] || exit 1
+          echo "OK: $N DroidSpaces options are valid Kconfig symbols"
       - name: Summary
         run: |
-          echo "### #4 Patches - OK (permissive: ${PERMISSIVE}, extra patches: ${CUSTOM_PATCH})" >> "$GITHUB_STEP_SUMMARY"
+          echo "### #4 Patches - OK (permissive: ${PERMISSIVE}, extra patches: ${CUSTOM_PATCH}, droidspaces: ${DROIDSPACES})" >> "$GITHUB_STEP_SUMMARY"
   kernelsu:
     name: "#5 KernelSU"
     needs: patches
@@ -410,38 +433,40 @@ jobs:
         if: env.DROIDSPACES == 'true'
         run: |
           set -eu
-          CFG=debug/.config
-          [ -f "$CFG" ] || { echo "::error::debug/.config was not collected"; ls -l debug 2>/dev/null || true; exit 1; }
+          CFG=debug/kernel.config
+          FRAG=kernel/kernel_device_modules-6.6/kernel/configs/droidspaces.config
+          [ -f "$CFG" ] || { echo "::error::debug/kernel.config was not collected"; ls -l debug 2>/dev/null || true; exit 1; }
+          [ -f "$FRAG" ] || { echo "::error::$FRAG missing"; exit 1; }
+          N=0
           FAIL=0
-          for opt in SYSVIPC POSIX_MQUEUE IPC_NS PID_NS DEVTMPFS USER_NS MACVLAN \
-                     IP6_NF_NAT IP6_NF_TARGET_MASQUERADE NETFILTER_XT_MATCH_ADDRTYPE \
-                     NETFILTER_XT_TARGET_LOG NETFILTER_XT_MATCH_RECENT \
-                     IP_SET IP_SET_HASH_IP IP_SET_HASH_NET NETFILTER_XT_SET \
-                     TMPFS_POSIX_ACL TMPFS_XATTR; do
-            if grep -qx "CONFIG_${opt}=y" "$CFG"; then
-              echo "OK      CONFIG_${opt}=y"
+          # single source of truth: whatever the fragment asks for must be on
+          for opt in $(grep -E '^CONFIG_[A-Z0-9_]+=y$' "$FRAG" | cut -d= -f1); do
+            N=$((N + 1))
+            if grep -qx "${opt}=y" "$CFG"; then
+              echo "OK      ${opt}=y"
             else
-              echo "::error::CONFIG_${opt} is not enabled - droidspaces.config did not take effect"
+              echo "::error::${opt} is not enabled - droidspaces.config did not take effect"
               FAIL=1
             fi
           done
-          for opt in CFS_BANDWIDTH CGROUP_PIDS; do
-            if grep -qx "CONFIG_${opt}=y" "$CFG"; then
-              echo "::error::CONFIG_${opt}=y must stay off - it breaks the kABI"
+          [ "$N" -ge 10 ] || { echo "::error::only $N options found in $FRAG"; FAIL=1; }
+          for opt in CONFIG_CFS_BANDWIDTH CONFIG_CGROUP_PIDS; do
+            if grep -qx "${opt}=y" "$CFG"; then
+              echo "::error::${opt}=y must stay off - it breaks the kABI"
               FAIL=1
             else
-              echo "OK      CONFIG_${opt} is off"
+              echo "OK      ${opt} is off"
             fi
           done
           [ "$FAIL" = "0" ] || exit 1
-          echo "### DroidSpaces config - OK" >> "$GITHUB_STEP_SUMMARY"
+          echo "### DroidSpaces config - OK ($N options)" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload debug artifacts
         if: always()
         uses: actions/upload-artifact@v6
         with:
           name: debug-${{ github.run_id }}
           path: |
-            debug/.config
+            debug/kernel.config
             debug/System.map
             debug/vmlinux.symvers
             debug/modules.builtin

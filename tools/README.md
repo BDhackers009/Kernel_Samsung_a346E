@@ -12,7 +12,7 @@ Run this between "CI finished" and "flash":
 
 ```bash
 # 1. download the debug artifact from the workflow run (debug-<run_id>.zip)
-#    it contains vmlinux.symvers
+#    it contains vmlinux.symvers and kernel.config
 # 2. pull the stock modules once
 adb pull /vendor/lib/modules stock-modules
 adb pull /vendor_dlkm/lib/modules stock-modules/vendor_dlkm
@@ -28,7 +28,11 @@ built against. Anything else means do not flash.
 Notes:
 
 * Only `__versions` entries are read; modules built without `MODVERSIONS` have
-  no CRCs and are skipped (Android's do not).
+  no CRCs. A module that cannot be parsed, or has no `__versions`, makes the
+  check fail by default — a partial module set must not report success. Pass
+  `--allow-skip` if you knowingly pulled only part of it.
 * Symbols the new kernel does not export at all are also reported, because a
-  missing symbol fails a module just as hard as a changed CRC.
+  missing symbol fails a module just as hard as a changed CRC. Symbols exported
+  by *another module* (cfg80211 from mac80211, …) are recognised through
+  `__ksymtab_strings` and skipped: the kernel change cannot affect them.
 * The comparison is blind to *new* exported symbols; adding symbols is safe.

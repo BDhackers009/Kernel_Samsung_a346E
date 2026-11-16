@@ -131,7 +131,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--symvers", required=True, help="vmlinux.symvers from the new build")
     ap.add_argument("--modules", required=True, help="directory with stock .ko files")
-    ap.add_argument("--quiet", action="store_true", help="only print problems")
+    ap.add_argument("--allow-skip", action="store_true",
+                    help="do not fail when a .ko cannot be parsed or has no __versions")
     args = ap.parse_args()
 
     if not os.path.isfile(args.symvers):
@@ -145,8 +146,7 @@ def main():
     if not kernel:
         print("error: no symbols parsed from symvers", file=sys.stderr)
         return 2
-    if not args.quiet:
-        print(f"kernel exports: {len(kernel)} symbols")
+    print(f"kernel exports: {len(kernel)} symbols")
 
     modules = []
     for root, _dirs, files in os.walk(args.modules):
@@ -158,6 +158,8 @@ def main():
         return 2
 
     bad, missing, checked = [], [], 0
+    skipped = []
+    compared_modules = 0
 
     # Symbols that the modules themselves export (cfg80211 from mac80211 and so
     # on) are not supposed to be in vmlinux.symvers; a kernel config change
@@ -171,10 +173,12 @@ def main():
         try:
             vers = elf_versions(path)
         except Exception as exc:  # noqa: BLE001 - report and continue
-            print(f"skip {rel}: {exc}", file=sys.stderr)
+            skipped.append((rel, str(exc)))
             continue
         if not vers:
+            skipped.append((rel, "no __versions section"))
             continue
+        compared_modules += 1
         for name, crc in vers:
             if name not in kernel:
                 if name not in module_exports:
@@ -192,8 +196,23 @@ def main():
     for rel, name, want, got in bad:
         print(f"MISMATCH {rel}: {name} module=0x{want:08x} kernel=0x{got:08x}")
 
+    if compared_modules == 0:
+        print("error: no module could be compared - the module directory is empty or all files failed to parse",
+              file=sys.stderr)
+        return 2
+
+    if skipped:
+        for rel, why in skipped[:20]:
+            print(f"skipped  {rel}: {why}", file=sys.stderr)
+        if len(skipped) > 20:
+            print(f"skipped  ... and {len(skipped) - 20} more", file=sys.stderr)
+        if not args.allow_skip:
+            print(f"\nFAILED: {len(skipped)} module(s) were not checked. Pull the complete module set, "
+                  f"or pass --allow-skip if that is intentional.", file=sys.stderr)
+            return 1
+
     if not bad and not missing:
-        print(f"OK: {checked} imported symbol CRCs verified across {len(modules)} modules")
+        print(f"OK: {checked} imported symbol CRCs verified across {compared_modules} modules")
         return 0
 
     print(f"\nFAILED: {len(bad)} CRC mismatch(es), {len(missing)} missing symbol(s).")
