@@ -12,11 +12,45 @@ Two ways to use it.
 
 ### Once: generate a baseline from the phone, commit it
 
-```bash
-adb pull /vendor/lib/modules stock-modules
-adb pull /vendor_dlkm/lib/modules stock-modules/vendor_dlkm
-adb pull /system_dlkm/lib/modules stock-modules/system_dlkm   # may be a symlink tree
+`/vendor/lib/modules` is a **symlink** to `/vendor_dlkm/lib/modules`; `adb pull`
+of a symlinked directory copies nothing. Pull the real directories:
 
+```bash
+adb pull /vendor_dlkm/lib/modules stock-modules/vendor_dlkm
+adb pull /system_dlkm/lib/modules stock-modules/system_dlkm
+```
+
+That covers ~260 of the ~456 loaded modules. The rest are packed in the
+`vendor_boot` ramdisk (LZ4 legacy compressed cpio) and are loaded during early
+boot. To include them:
+
+```bash
+adb shell "su -c 'dd if=/dev/block/by-name/vendor_boot of=/data/local/tmp/vb.img bs=1M'"
+adb pull /data/local/tmp/vb.img vendor_boot.img
+python3 - <<'EOF'
+import lz4.block, os, struct
+d = open("vendor_boot.img", "rb").read()
+pos = d.find(b"\x02\x21\x4c\x18") + 4          # LZ4 legacy magic
+out = bytearray()
+while pos + 4 <= len(d):
+    n = struct.unpack_from("<I", d, pos)[0]
+    if not n or n > 8 << 20:
+        break
+    out += lz4.block.decompress(d[pos + 4:pos + 4 + n], uncompressed_size=8 << 20)
+    pos += 4 + n
+os.makedirs("stock-modules/vendor_boot", exist_ok=True)
+data, pos = bytes(out), bytes(out).find(b"070701")
+while data[pos:pos + 6] in (b"070701", b"070702"):
+    f = [int(data[pos + 6 + i * 8:pos + 14 + i * 8], 16) for i in range(13)]
+    name = data[pos + 110:pos + 110 + f[11] - 1].decode()
+    off = pos + 110 + f[11]; off += (-off) % 4
+    if name == "TRAILER!!!":
+        break
+    if name.endswith(".ko"):
+        open(os.path.join("stock-modules/vendor_boot", os.path.basename(name)), "wb").write(data[off:off + f[6]])
+    pos = off + f[6]; pos += (-pos) % 4
+EOF
+# needs: pip install lz4
 python3 tools/kabi-check.py --dump-baseline stock-modules > abi/stock-modules.baseline
 ```
 
