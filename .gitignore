@@ -1,0 +1,6 @@
+# local artifacts, never committed
+stock-modules/
+debug/
+abi-dump.log
+Image
+out/
