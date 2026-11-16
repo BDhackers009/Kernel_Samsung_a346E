@@ -21,6 +21,11 @@ on:
         type: boolean
         required: true
         default: false
+      droidspaces:
+        description: "Enable DroidSpaces kernel options (namespaces, devtmpfs, NAT)?"
+        type: boolean
+        required: true
+        default: false
   push:
     branches: [A346E]
   pull_request:
@@ -36,6 +41,7 @@ env:
   KSU_VAR: ${{ github.event.inputs.ksu_variant || (github.event_name == 'push' && 'KSUN') || 'NO-ROOT' }}
   PERMISSIVE: ${{ github.event.inputs.permissive || 'false' }}
   CUSTOM_PATCH: ${{ github.event.inputs.custom_patches || 'false' }}
+  DROIDSPACES: ${{ github.event.inputs.droidspaces || 'false' }}
 jobs:
   detect:
     name: "#1 Checkout & Detect"
@@ -284,9 +290,10 @@ jobs:
           [ -n "$REAL_DIR" ] || { echo "::error::no kernel tree found"; exit 1; }
           SEL=$([ "$PERMISSIVE" = "true" ] && echo permissive || echo enforcing)
           CUS=$([ "$CUSTOM_PATCH" = "true" ] && echo custom || echo nocustom)
+          DS=$([ "$DROIDSPACES" = "true" ] && echo droidspaces || echo plain)
           { echo "REAL_DIR=$REAL_DIR"; echo "G_KERNEL=$GITHUB_WORKSPACE/$REAL_DIR"; } >> "$GITHUB_ENV"
           echo "selinux=$SEL" >> "$GITHUB_OUTPUT"
-          echo "artifact=AnyKernel3-A346E-${KSU_VAR}-${SEL}-${CUS}" >> "$GITHUB_OUTPUT"
+          echo "artifact=AnyKernel3-A346E-${KSU_VAR}-${SEL}-${CUS}-${DS}" >> "$GITHUB_OUTPUT"
       - name: Add KernelSU
         id: ksu
         if: env.KSU_VAR != 'NO-ROOT'
@@ -386,7 +393,7 @@ jobs:
         run: |
           set -eu
           chmod +x ./build_kernel.sh
-          echo "PERMISSIVE=$PERMISSIVE  CUSTOM_PATCH=$CUSTOM_PATCH  KSU_VAR=$KSU_VAR"
+          echo "PERMISSIVE=$PERMISSIVE  CUSTOM_PATCH=$CUSTOM_PATCH  KSU_VAR=$KSU_VAR  DROIDSPACES=$DROIDSPACES"
           if ! bash ./build_kernel.sh 2>&1 | tee build.log; then
             echo "::error::build_kernel.sh failed - see the build-log artifact"
             tail -n 60 build.log || true
@@ -399,6 +406,47 @@ jobs:
             grep -q "SELinux permissive patch" build.log || echo "::warning::permissive requested but not confirmed in the log"
           fi
           ls -lh Image
+      - name: Verify DroidSpaces config
+        if: env.DROIDSPACES == 'true'
+        run: |
+          set -eu
+          CFG=debug/.config
+          [ -f "$CFG" ] || { echo "::error::debug/.config was not collected"; ls -l debug 2>/dev/null || true; exit 1; }
+          FAIL=0
+          for opt in SYSVIPC POSIX_MQUEUE IPC_NS PID_NS DEVTMPFS USER_NS MACVLAN \
+                     IP6_NF_NAT IP6_NF_TARGET_MASQUERADE NETFILTER_XT_MATCH_ADDRTYPE \
+                     NETFILTER_XT_TARGET_LOG NETFILTER_XT_MATCH_RECENT \
+                     IP_SET IP_SET_HASH_IP IP_SET_HASH_NET NETFILTER_XT_SET \
+                     TMPFS_POSIX_ACL TMPFS_XATTR; do
+            if grep -qx "CONFIG_${opt}=y" "$CFG"; then
+              echo "OK      CONFIG_${opt}=y"
+            else
+              echo "::error::CONFIG_${opt} is not enabled - droidspaces.config did not take effect"
+              FAIL=1
+            fi
+          done
+          for opt in CFS_BANDWIDTH CGROUP_PIDS; do
+            if grep -qx "CONFIG_${opt}=y" "$CFG"; then
+              echo "::error::CONFIG_${opt}=y must stay off - it breaks the kABI"
+              FAIL=1
+            else
+              echo "OK      CONFIG_${opt} is off"
+            fi
+          done
+          [ "$FAIL" = "0" ] || exit 1
+          echo "### DroidSpaces config - OK" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: debug-${{ github.run_id }}
+          path: |
+            debug/.config
+            debug/System.map
+            debug/vmlinux.symvers
+            debug/modules.builtin
+          if-no-files-found: warn
+          compression-level: 9
       - name: Package AnyKernel3
         run: |
           set -eu

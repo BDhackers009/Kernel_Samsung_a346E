@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""Compare the symbol CRCs a stock Android module expects with the ones a new
+kernel build exports.
+
+Why this exists: the phone runs Samsung's prebuilt vendor modules against a
+custom Image. Compatibility is checked by modversions CRCs, not by the version
+string (the release string is ignored when CRCs are present). If any exported
+symbol a module imports has a different CRC after a config change, the module
+is refused at load time and the phone bootloops.
+
+Usage:
+    python3 tools/kabi-check.py --symvers debug/vmlinux.symvers --modules ~/stock-modules
+
+`--symvers` is the vmlinux.symvers produced by the build (debug artifact).
+`--modules` is a directory containing .ko files pulled from the phone, e.g.
+    adb pull /vendor/lib/modules stock-modules
+    adb pull /system_dlkm/lib/modules stock-modules/dlkm
+
+Exit code 0 when every imported symbol matches, 1 otherwise.
+"""
+
+import argparse
+import os
+import struct
+import sys
+
+MODULE_NAME_LEN = 56  # include/linux/module.h
+
+
+def read_symvers(path):
+    """vmlinux.symvers: 0x<crc>\t<symbol>\t<module>"""
+    crcs = {}
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 2:
+                parts = line.split()
+            if len(parts) < 2:
+                continue
+            try:
+                crc = int(parts[0], 16)
+            except ValueError:
+                continue
+            crcs[parts[1]] = crc
+    return crcs
+
+
+def elf_versions(path):
+    """Return [(symbol, crc)] from a module's __versions section."""
+    with open(path, "rb") as fh:
+        data = fh.read()
+    if len(data) < 64 or data[:4] != b"\x7fELF":
+        raise ValueError("not an ELF file")
+
+    is64 = data[4] == 2
+    if is64:
+        shoff, = struct.unpack_from("<Q", data, 0x28)
+        shentsize, shnum, shstrndx = struct.unpack_from("<HHH", data, 0x3A)
+        sh_fmt = "<IIQQQQIIQQ"
+        crc_fmt = "<Q"
+    else:
+        shoff, = struct.unpack_from("<I", data, 0x20)
+        shentsize, shnum, shstrndx = struct.unpack_from("<HHH", data, 0x2E)
+        sh_fmt = "<IIIIIIIIII"
+        crc_fmt = "<I"
+
+    if shoff == 0 or shnum == 0:
+        return []
+
+    sections = []
+    for i in range(shnum):
+        off = shoff + i * shentsize
+        if off + struct.calcsize(sh_fmt) > len(data):
+            break
+        sections.append(struct.unpack_from(sh_fmt, data, off))
+
+    # section header string table
+    names = b""
+    if shstrndx < len(sections):
+        sh = sections[shstrndx]
+        names = data[sh[4]:sh[4] + sh[5]]
+
+    def sec_name(sh):
+        start = sh[0]
+        end = names.find(b"\x00", start)
+        return names[start:end].decode("ascii", "replace") if start < len(names) else ""
+
+    out = []
+    for sh in sections:
+        if sec_name(sh) != "__versions":
+            continue
+        offset, size = sh[4], sh[5]
+        ent = struct.calcsize(crc_fmt) + MODULE_NAME_LEN
+        for pos in range(0, size - ent + 1, ent):
+            base = offset + pos
+            (crc,) = struct.unpack_from(crc_fmt, data, base)
+            raw = data[base + struct.calcsize(crc_fmt):base + ent]
+            name = raw.split(b"\x00", 1)[0].decode("ascii", "replace")
+            if name:
+                out.append((name, crc))
+        break
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--symvers", required=True, help="vmlinux.symvers from the new build")
+    ap.add_argument("--modules", required=True, help="directory with stock .ko files")
+    ap.add_argument("--quiet", action="store_true", help="only print problems")
+    args = ap.parse_args()
+
+    if not os.path.isfile(args.symvers):
+        print(f"error: {args.symvers} not found", file=sys.stderr)
+        return 2
+    if not os.path.isdir(args.modules):
+        print(f"error: {args.modules} is not a directory", file=sys.stderr)
+        return 2
+
+    kernel = read_symvers(args.symvers)
+    if not kernel:
+        print("error: no symbols parsed from symvers", file=sys.stderr)
+        return 2
+    if not args.quiet:
+        print(f"kernel exports: {len(kernel)} symbols")
+
+    modules = []
+    for root, _dirs, files in os.walk(args.modules):
+        for f in files:
+            if f.endswith(".ko"):
+                modules.append(os.path.join(root, f))
+    if not modules:
+        print("error: no .ko files found", file=sys.stderr)
+        return 2
+
+    bad, missing, checked = [], [], 0
+    for path in sorted(modules):
+        rel = os.path.relpath(path, args.modules)
+        try:
+            vers = elf_versions(path)
+        except Exception as exc:  # noqa: BLE001 - report and continue
+            print(f"skip {rel}: {exc}", file=sys.stderr)
+            continue
+        if not vers:
+            continue
+        for name, crc in vers:
+            if name not in kernel:
+                missing.append((rel, name))
+                continue
+            checked += 1
+            if kernel[name] != crc:
+                bad.append((rel, name, crc, kernel[name]))
+
+    for rel, name in missing[:20]:
+        print(f"missing  {rel}: {name} (not exported by the new kernel)")
+    if len(missing) > 20:
+        print(f"missing  ... and {len(missing) - 20} more")
+
+    for rel, name, want, got in bad:
+        print(f"MISMATCH {rel}: {name} module=0x{want:08x} kernel=0x{got:08x}")
+
+    if not bad and not missing:
+        print(f"OK: {checked} imported symbol CRCs verified across {len(modules)} modules")
+        return 0
+
+    print(f"\nFAILED: {len(bad)} CRC mismatch(es), {len(missing)} missing symbol(s).")
+    print("Do not flash this kernel: those modules will be refused at load time.")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

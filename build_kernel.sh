@@ -4,6 +4,8 @@
 # Options (env vars, set by .github/workflows/build_kernel.yml):
 #   PERMISSIVE=true           apply Permissive/selinux-make-permissive.patch
 #   CUSTOM_PATCH=true         also apply patch/*.patch
+#   DROIDSPACES=true          append kernel/configs/droidspaces.config
+#                             (IPC/PID namespaces, devtmpfs, netfilter, ...)
 #   KSU_VERSION, KSU_GIT_TAG  KernelSU-Next version, used when no git checkout is found
 #
 # kernel-6.6/ stays pristine upstream. Device fixes are patches in
@@ -22,6 +24,12 @@ DEVICE_MODULES_DIR="kernel_device_modules-6.6"
 OUT_BASE="${ROOT_DIR}/out/target/product/${PRODUCT}/obj"
 OUT_BASE_REL="../out/target/product/${PRODUCT}/obj"   # relative to kernel/
 DEFCONFIG_OVERLAYS="mt6877_overlay.config mt6877_teegris_5_overlay.config disable_module_sig.config"
+
+# DroidSpaces: appended last so merge_config.sh lets it win over Samsung's
+# defaults. Off unless the workflow asks for it (DROIDSPACES=true).
+if [ "${DROIDSPACES:-false}" = "true" ]; then
+  DEFCONFIG_OVERLAYS="${DEFCONFIG_OVERLAYS} droidspaces.config"
+fi
 SIG_FRAGMENT="${DEVICE_MODULES_DIR}/kernel/configs/disable_module_sig.config"
 IDENT='[a-zA-Z_][a-zA-Z0-9_]*'
 
@@ -866,6 +874,31 @@ collect_image() {
   ok "تمام! فایل Image در $dest آماده است."
 }
 
+# Keep the files needed to verify the ABI and to decode a panic later. Without
+# vmlinux.symvers there is no way to check that the stock vendor modules still
+# bind to this kernel, and without System.map a pstore dump is unreadable.
+collect_debug() {
+  local dist="${OUT_BASE}/KLEAF_OBJ/dist" dst="${ROOT_DIR}/debug" f name
+
+  log "Collecting debug artifacts"
+  rm -rf "$dst"
+  mkdir -p "$dst"
+
+  for name in .config System.map vmlinux.symvers modules.builtin; do
+    f="$(find "$dist" -name "$name" -type f -print -quit 2>/dev/null || true)"
+    if [ -z "$f" ]; then
+      # .config lives in the bazel output tree on some kleaf versions
+      f="$(find "${ROOT_DIR}/out" -name "$name" -type f -print -quit 2>/dev/null || true)"
+    fi
+    if [ -n "$f" ]; then
+      cp -f "$f" "$dst/$name"
+      ok "  $name <- ${f#"${ROOT_DIR}/"}"
+    else
+      warn "  $name not found in dist/"
+    fi
+  done
+}
+
 # ---- Main -------------------------------------------------------------------
 
 main() {
@@ -880,6 +913,7 @@ main() {
   generate_build_config
   run_kernel_build
   collect_image
+  collect_debug
 
   log "=== Build Completed Successfully ==="
 }
