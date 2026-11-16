@@ -933,7 +933,10 @@ main() {
   generate_build_config
   run_kernel_build
   collect_image
-  collect_debug
+  # only the droidspaces build needs the extra files; plain builds stay as before
+  if [ "${DROIDSPACES:-false}" = "true" ]; then
+    collect_debug
+  fi
 
   log "=== Build Completed Successfully ==="
 }

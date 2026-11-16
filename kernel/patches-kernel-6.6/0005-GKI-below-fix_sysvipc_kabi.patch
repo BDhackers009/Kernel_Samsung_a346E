@@ -1,32 +1,33 @@
 --- a/include/linux/sched.h
 +++ b/include/linux/sched.h
-@@ -1073,8 +1073,8 @@ struct task_struct {
+@@ -1072,10 +1072,10 @@
+ 
  	struct nameidata		*nameidata;
-
- #ifdef CONFIG_SYSVIPC
+ 
+-#ifdef CONFIG_SYSVIPC
 -	struct sysv_sem			sysvsem;
 -	struct sysv_shm			sysvshm;
-+	// struct sysv_sem			sysvsem;
-+	// struct sysv_shm			sysvshm;
- #endif
+-#endif
++	/*
++	 * sysvsem/sysvshm live in the Android KABI padding at the end of this
++	 * struct, so that enabling CONFIG_SYSVIPC does not move any offset.
++	 */
  #ifdef CONFIG_DETECT_HUNG_TASK
  	unsigned long			last_switch_count;
-@@ -1524,9 +1524,17 @@ struct task_struct {
- 	unsigned user_dumpable:1;
- 	});
-
+ 	unsigned long			last_switch_time;
+@@ -1524,9 +1524,15 @@
+ 		unsigned	user_dumpable:1;
+ 		});
+ 
 +#ifdef CONFIG_SYSVIPC
-+	/* Use KABI padding for SysV IPC fields. */
++	/* 8 + 16 bytes: exactly the three slots below, so the ABI does not move. */
 +	ANDROID_KABI_USE(3, struct sysv_sem sysvsem);
 +	_ANDROID_KABI_REPLACE(ANDROID_KABI_RESERVE(4); ANDROID_KABI_RESERVE(5), struct sysv_shm sysvshm);
 +#else
-+	/* Keep the KABI padding when SysV IPC is disabled. */
  	ANDROID_KABI_RESERVE(3);
  	ANDROID_KABI_RESERVE(4);
  	ANDROID_KABI_RESERVE(5);
 +#endif
-+
  	ANDROID_KABI_RESERVE(6);
  	ANDROID_KABI_RESERVE(7);
  	ANDROID_KABI_RESERVE(8);
-  

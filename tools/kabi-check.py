@@ -86,6 +86,25 @@ def _elf_sections(data):
     return sections, sec_name
 
 
+def read_baseline(path):
+    """Baseline: one '0x<crc> <symbol>' line per symbol the stock modules import."""
+    crcs = {}
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            try:
+                crc = int(parts[0], 16)
+            except ValueError:
+                continue
+            crcs[parts[1]] = crc
+    return crcs
+
+
 def elf_versions(path):
     """Return [(symbol, crc)] from a module's __versions section."""
     with open(path, "rb") as fh:
@@ -127,17 +146,94 @@ def elf_exported_names(path):
     return set()
 
 
+def dump_baseline(modules_dir, out=sys.stdout):
+    """Print '0x<crc> <symbol>' for everything the stock modules import."""
+    if not os.path.isdir(modules_dir):
+        print(f"error: {modules_dir} is not a directory", file=sys.stderr)
+        return 2
+    seen = {}
+    conflicts = 0
+    count = 0
+    for root, _dirs, files in os.walk(modules_dir):
+        for f in sorted(files):
+            if not f.endswith(".ko"):
+                continue
+            count += 1
+            try:
+                vers = elf_versions(os.path.join(root, f))
+            except Exception as exc:  # noqa: BLE001
+                print(f"skip {f}: {exc}", file=sys.stderr)
+                continue
+            for name, crc in vers:
+                if name in seen and seen[name] != crc:
+                    conflicts += 1
+                    continue
+                seen[name] = crc
+    if not seen:
+        print("error: no symbols found", file=sys.stderr)
+        return 2
+    out.write("# expected CRCs of the symbols the stock modules import\n")
+    out.write(f"# generated from {count} module(s)\n")
+    for name in sorted(seen):
+        out.write(f"0x{seen[name]:08x} {name}\n")
+    print(f"baseline: {len(seen)} symbols from {count} modules"
+          + (f", {conflicts} conflicting CRC(s) ignored" if conflicts else ""), file=sys.stderr)
+    return 0
+
+
+def check_baseline(symvers, baseline):
+    kernel = read_symvers(symvers)
+    if not kernel:
+        print("error: no symbols parsed from symvers", file=sys.stderr)
+        return 2
+    expected = read_baseline(baseline)
+    if not expected:
+        print("error: no symbols parsed from the baseline", file=sys.stderr)
+        return 2
+    bad, absent, checked = [], [], 0
+    for name, want in expected.items():
+        if name not in kernel:
+            absent.append(name)
+            continue
+        checked += 1
+        if kernel[name] != want:
+            bad.append((name, want, kernel[name]))
+    for name, want, got in bad:
+        print(f"MISMATCH {name}: stock=0x{want:08x} kernel=0x{got:08x}")
+    if absent:
+        print(f"{len(absent)} baseline symbol(s) are not exported by this kernel "
+              f"(module-provided or removed): {', '.join(sorted(absent)[:10])}"
+              + (" ..." if len(absent) > 10 else ""))
+    if bad:
+        print(f"\nFAILED: {len(bad)} CRC mismatch(es). Do not flash this kernel.")
+        return 1
+    print(f"OK: {checked} symbol CRCs match the stock modules' baseline")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--symvers", required=True, help="vmlinux.symvers from the new build")
-    ap.add_argument("--modules", required=True, help="directory with stock .ko files")
+    ap.add_argument("--symvers", help="vmlinux.symvers from the new build")
+    ap.add_argument("--modules", help="directory with stock .ko files")
+    ap.add_argument("--baseline", help="baseline file produced by --dump-baseline")
+    ap.add_argument("--dump-baseline", metavar="DIR", help="print a baseline from a directory of stock .ko files")
     ap.add_argument("--allow-skip", action="store_true",
                     help="do not fail when a .ko cannot be parsed or has no __versions")
     args = ap.parse_args()
 
+    if args.dump_baseline:
+        return dump_baseline(args.dump_baseline)
+
+    if not args.symvers:
+        ap.error("--symvers is required (or use --dump-baseline)")
     if not os.path.isfile(args.symvers):
         print(f"error: {args.symvers} not found", file=sys.stderr)
         return 2
+
+    if args.baseline:
+        return check_baseline(args.symvers, args.baseline)
+    if not args.modules:
+        ap.error("either --modules or --baseline is required")
     if not os.path.isdir(args.modules):
         print(f"error: {args.modules} is not a directory", file=sys.stderr)
         return 2

@@ -217,10 +217,19 @@ jobs:
             || { echo "::error::build_kernel.sh does not append droidspaces.config"; exit 1; }
           FAIL=0
           N=0
+          # the documented core set must never be dropped from the fragment
+          for opt in SYSVIPC POSIX_MQUEUE IPC_NS PID_NS DEVTMPFS USER_NS; do
+            if grep -qx "CONFIG_${opt}=y" "$F"; then
+              echo "OK      ${opt} present"
+            else
+              echo "::error::CONFIG_${opt} is missing from $F"
+              FAIL=1
+            fi
+          done
           for opt in $(grep -E '^CONFIG_[A-Z0-9_]+=y$' "$F" | cut -d= -f1); do
             sym=${opt#CONFIG_}
             N=$((N + 1))
-            if grep -rqs "^config ${sym}$" --include='Kconfig*' kernel/kernel_device_modules-6.6 kernel-6.6; then
+            if grep -rqsE "^(menu)?config[[:space:]]+${sym}$" --include='Kconfig*' kernel/kernel_device_modules-6.6 kernel-6.6; then
               echo "OK      ${sym} exists in Kconfig"
             else
               echo "::error::${sym} has no Kconfig entry (typo?)"
@@ -313,10 +322,10 @@ jobs:
           [ -n "$REAL_DIR" ] || { echo "::error::no kernel tree found"; exit 1; }
           SEL=$([ "$PERMISSIVE" = "true" ] && echo permissive || echo enforcing)
           CUS=$([ "$CUSTOM_PATCH" = "true" ] && echo custom || echo nocustom)
-          DS=$([ "$DROIDSPACES" = "true" ] && echo droidspaces || echo plain)
+          DS=$([ "$DROIDSPACES" = "true" ] && echo -droidspaces || echo "")
           { echo "REAL_DIR=$REAL_DIR"; echo "G_KERNEL=$GITHUB_WORKSPACE/$REAL_DIR"; } >> "$GITHUB_ENV"
           echo "selinux=$SEL" >> "$GITHUB_OUTPUT"
-          echo "artifact=AnyKernel3-A346E-${KSU_VAR}-${SEL}-${CUS}-${DS}" >> "$GITHUB_OUTPUT"
+          echo "artifact=AnyKernel3-A346E-${KSU_VAR}-${SEL}-${CUS}${DS}" >> "$GITHUB_OUTPUT"
       - name: Add KernelSU
         id: ksu
         if: env.KSU_VAR != 'NO-ROOT'
@@ -460,8 +469,21 @@ jobs:
           done
           [ "$FAIL" = "0" ] || exit 1
           echo "### DroidSpaces config - OK ($N options)" >> "$GITHUB_STEP_SUMMARY"
+      - name: kABI check against stock modules
+        if: env.DROIDSPACES == 'true'
+        run: |
+          set -eu
+          if [ -f abi/stock-modules.baseline ]; then
+            python3 tools/kabi-check.py --symvers debug/vmlinux.symvers \
+              --baseline abi/stock-modules.baseline
+            echo "### kABI check - OK" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::abi/stock-modules.baseline is missing, so the CRC gate did not run."
+            echo "Generate it once with the phone connected and commit it:"
+            echo "  python3 tools/kabi-check.py --dump-baseline stock-modules > abi/stock-modules.baseline"
+          fi
       - name: Upload debug artifacts
-        if: always()
+        if: ${{ always() && env.DROIDSPACES == 'true' }}
         uses: actions/upload-artifact@v6
         with:
           name: debug-${{ github.run_id }}
