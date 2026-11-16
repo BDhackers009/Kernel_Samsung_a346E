@@ -878,23 +878,41 @@ collect_image() {
 # vmlinux.symvers there is no way to check that the stock vendor modules still
 # bind to this kernel, and without System.map a pstore dump is unreadable.
 collect_debug() {
-  local dist="${OUT_BASE}/KLEAF_OBJ/dist" dst="${ROOT_DIR}/debug" f name
+  local dist="${OUT_BASE}/KLEAF_OBJ/dist" dst="${ROOT_DIR}/debug" f name c
 
   log "Collecting debug artifacts"
   rm -rf "$dst"
   mkdir -p "$dst"
 
-  for name in .config System.map vmlinux.symvers modules.builtin; do
-    f="$(find "$dist" -name "$name" -type f -print -quit 2>/dev/null || true)"
+  # The kernel .config is not the only one in the output tree: the device
+  # modules build emits a much smaller module-only .config next to it. The
+  # kernel one is the only one with CONFIG_ARM64=y, so pick that explicitly
+  # instead of taking whatever find returns first.
+  f=""
+  while IFS= read -r c; do
+    if grep -q '^CONFIG_ARM64=y' "$c" 2>/dev/null; then
+      f="$c"
+      break
+    fi
+  done < <(find "$dist" "${ROOT_DIR}/out" -name .config -type f 2>/dev/null | sort)
+  if [ -n "$f" ]; then
+    cp -f "$f" "$dst/.config"
+    ok "  .config <- ${f#"${ROOT_DIR}/"}"
+  else
+    warn "  .config not found (no file with CONFIG_ARM64=y)"
+  fi
+
+  for name in System.map vmlinux.symvers modules.builtin; do
+    # prefer the kernel build (the modules build has neither System.map nor symvers)
+    f="$(find "$dist" -path '*kernel_aarch64*' -name "$name" -type f -print -quit 2>/dev/null || true)"
     if [ -z "$f" ]; then
-      # .config lives in the bazel output tree on some kleaf versions
-      f="$(find "${ROOT_DIR}/out" -name "$name" -type f -print -quit 2>/dev/null || true)"
+      f="$(find "$dist" "${ROOT_DIR}/out" -name "$name" -type f -print -quit 2>/dev/null || true)"
     fi
     if [ -n "$f" ]; then
       cp -f "$f" "$dst/$name"
       ok "  $name <- ${f#"${ROOT_DIR}/"}"
     else
-      warn "  $name not found in dist/"
+      warn "  $name not found in the build output"
     fi
   done
 }

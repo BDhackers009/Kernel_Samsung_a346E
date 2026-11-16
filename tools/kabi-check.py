@@ -48,10 +48,8 @@ def read_symvers(path):
     return crcs
 
 
-def elf_versions(path):
-    """Return [(symbol, crc)] from a module's __versions section."""
-    with open(path, "rb") as fh:
-        data = fh.read()
+def _elf_sections(data):
+    """Return (sections, name_of_section) for an ELF buffer."""
     if len(data) < 64 or data[:4] != b"\x7fELF":
         raise ValueError("not an ELF file")
 
@@ -60,15 +58,13 @@ def elf_versions(path):
         shoff, = struct.unpack_from("<Q", data, 0x28)
         shentsize, shnum, shstrndx = struct.unpack_from("<HHH", data, 0x3A)
         sh_fmt = "<IIQQQQIIQQ"
-        crc_fmt = "<Q"
     else:
         shoff, = struct.unpack_from("<I", data, 0x20)
         shentsize, shnum, shstrndx = struct.unpack_from("<HHH", data, 0x2E)
         sh_fmt = "<IIIIIIIIII"
-        crc_fmt = "<I"
 
     if shoff == 0 or shnum == 0:
-        return []
+        return [], lambda _sh: ""
 
     sections = []
     for i in range(shnum):
@@ -77,7 +73,6 @@ def elf_versions(path):
             break
         sections.append(struct.unpack_from(sh_fmt, data, off))
 
-    # section header string table
     names = b""
     if shstrndx < len(sections):
         sh = sections[shstrndx]
@@ -87,6 +82,17 @@ def elf_versions(path):
         start = sh[0]
         end = names.find(b"\x00", start)
         return names[start:end].decode("ascii", "replace") if start < len(names) else ""
+
+    return sections, sec_name
+
+
+def elf_versions(path):
+    """Return [(symbol, crc)] from a module's __versions section."""
+    with open(path, "rb") as fh:
+        data = fh.read()
+    sections, sec_name = _elf_sections(data)
+    is64 = len(data) > 4 and data[4] == 2
+    crc_fmt = "<Q" if is64 else "<I"
 
     out = []
     for sh in sections:
@@ -103,6 +109,22 @@ def elf_versions(path):
                 out.append((name, crc))
         break
     return out
+
+
+def elf_exported_names(path):
+    """Names a module exports (__ksymtab_strings), so imports from another
+    module are not mistaken for symbols the kernel is supposed to provide."""
+    with open(path, "rb") as fh:
+        data = fh.read()
+    try:
+        sections, sec_name = _elf_sections(data)
+    except ValueError:
+        return set()
+    for sh in sections:
+        if sec_name(sh) == "__ksymtab_strings":
+            blob = data[sh[4]:sh[4] + sh[5]]
+            return {s.decode("ascii", "replace") for s in blob.split(b"\x00") if s}
+    return set()
 
 
 def main():
@@ -136,6 +158,14 @@ def main():
         return 2
 
     bad, missing, checked = [], [], 0
+
+    # Symbols that the modules themselves export (cfg80211 from mac80211 and so
+    # on) are not supposed to be in vmlinux.symvers; a kernel config change
+    # cannot move their CRCs either, so they are skipped rather than reported.
+    module_exports = set()
+    for path in modules:
+        module_exports |= elf_exported_names(path)
+
     for path in sorted(modules):
         rel = os.path.relpath(path, args.modules)
         try:
@@ -147,7 +177,8 @@ def main():
             continue
         for name, crc in vers:
             if name not in kernel:
-                missing.append((rel, name))
+                if name not in module_exports:
+                    missing.append((rel, name))
                 continue
             checked += 1
             if kernel[name] != crc:
