@@ -2627,60 +2627,247 @@ static int wlanMonStop(struct net_device *prDev)
 static const struct net_device_ops wlan_mon_netdev_ops = {
 	.ndo_open = wlanMonOpen,
 	.ndo_stop = wlanMonStop,
+	.ndo_start_xmit = wlanMonXmit,
 };
+
+static void wlanMonNetdevDestructor(struct net_device *prDev)
+{
+	struct wireless_dev *prWdev = prDev->ieee80211_ptr;
+
+	free_netdev(prDev);
+	kfree(prWdev);
+}
+
+struct net_device *wlanCreateMonitorNetdev(struct GLUE_INFO *prGlueInfo,
+					   struct wiphy *prWiphy,
+					   const char *pcName,
+					   struct wireless_dev *prWdev)
+{
+	struct net_device *prMonDev = NULL;
+	struct NETDEV_PRIVATE_GLUE_INFO *prNetDevPriv;
+	bool fgRtnlLocked;
+	int i4Ret = 0;
+
+	if (!prGlueInfo || !prWiphy || !pcName)
+		return ERR_PTR(-EINVAL);
+
+	fgRtnlLocked = rtnl_is_locked();
+	if (!fgRtnlLocked)
+		rtnl_lock();
+	mutex_lock(&prGlueInfo->monLifecycleLock);
+	if (READ_ONCE(prGlueInfo->fgMonStopping)) {
+		i4Ret = -ESHUTDOWN;
+		goto out_unlock;
+	}
+	if (!prWdev && !READ_ONCE(prGlueInfo->fgIsEnableMon)) {
+		i4Ret = -ECANCELED;
+		goto out_unlock;
+	}
+	if (READ_ONCE(prGlueInfo->prMonDevHandler)) {
+		i4Ret = -EEXIST;
+		goto out_unlock;
+	}
+	if (prWdev)
+		WRITE_ONCE(prGlueInfo->fgIsCfg80211Monitor, TRUE);
+
+	prMonDev = alloc_netdev_mq(sizeof(struct NETDEV_PRIVATE_GLUE_INFO),
+				   pcName, NET_NAME_PREDICTABLE, ether_setup,
+				   CFG_MAX_TXQ_NUM);
+	if (!prMonDev) {
+		i4Ret = -ENOMEM;
+		goto out_unlock;
+	}
+
+	prNetDevPriv = (struct NETDEV_PRIVATE_GLUE_INFO *)
+		       netdev_priv(prMonDev);
+	prNetDevPriv->prGlueInfo = prGlueInfo;
+	prNetDevPriv->ucBssIdx = AIS_DEFAULT_INDEX;
+
+	prMonDev->netdev_ops = &wlan_mon_netdev_ops;
+	prMonDev->type = ARPHRD_IEEE80211_RADIOTAP;
+	prMonDev->needed_headroom = NIC_TX_DESC_AND_PADDING_LENGTH +
+				    prGlueInfo->prAdapter->chip_info->txd_append_size;
+
+	if (prWdev) {
+		prWdev->wiphy = prWiphy;
+		prWdev->netdev = prMonDev;
+		prWdev->iftype = NL80211_IFTYPE_MONITOR;
+		prMonDev->ieee80211_ptr = prWdev;
+	}
+
+	netif_carrier_off(prMonDev);
+	netif_tx_stop_all_queues(prMonDev);
+	kalResetStats(prMonDev);
+
+	if (prWdev) {
+#if KERNEL_VERSION(5, 12, 0) <= LINUX_VERSION_CODE
+		i4Ret = cfg80211_register_netdevice(prMonDev);
+#else
+		i4Ret = register_netdevice(prMonDev);
+#endif
+	} else {
+		i4Ret = register_netdevice(prMonDev);
+	}
+
+	if (i4Ret < 0) {
+		free_netdev(prMonDev);
+		goto out_unlock;
+	}
+
+	if (prWdev) {
+		prMonDev->needs_free_netdev = FALSE;
+#if KERNEL_VERSION(4, 14, 0) <= LINUX_VERSION_CODE
+		prMonDev->priv_destructor = wlanMonNetdevDestructor;
+#else
+		prMonDev->destructor = wlanMonNetdevDestructor;
+#endif
+	}
+
+	spin_lock_bh(&prGlueInfo->rMonTxQueue.lock);
+	WRITE_ONCE(prGlueInfo->fgMonTxReady, FALSE);
+	WRITE_ONCE(prGlueInfo->prMonDevHandler, prMonDev);
+	spin_unlock_bh(&prGlueInfo->rMonTxQueue.lock);
+
+out_unlock:
+	if (prWdev && i4Ret < 0)
+		WRITE_ONCE(prGlueInfo->fgIsCfg80211Monitor, FALSE);
+	mutex_unlock(&prGlueInfo->monLifecycleLock);
+	if (!fgRtnlLocked)
+		rtnl_unlock();
+	return i4Ret < 0 ? ERR_PTR(i4Ret) : prMonDev;
+}
+
+void wlanMonStopTx(struct GLUE_INFO *prGlueInfo, struct net_device *prMonDev)
+{
+	if (!prGlueInfo || !prMonDev)
+		return;
+
+	spin_lock_bh(&prGlueInfo->rMonTxQueue.lock);
+	if (prGlueInfo->prMonDevHandler == prMonDev)
+		WRITE_ONCE(prGlueInfo->fgMonTxReady, FALSE);
+	spin_unlock_bh(&prGlueInfo->rMonTxQueue.lock);
+
+	netif_tx_disable(prMonDev);
+	cancel_work_sync(&prGlueInfo->monTxWork);
+	skb_queue_purge(&prGlueInfo->rMonTxQueue);
+}
+
+void wlanMonStartTx(struct GLUE_INFO *prGlueInfo, struct net_device *prMonDev)
+{
+	bool fgReady = FALSE;
+
+	if (!prGlueInfo || !prMonDev)
+		return;
+
+	mutex_lock(&prGlueInfo->monLifecycleLock);
+	spin_lock_bh(&prGlueInfo->rMonTxQueue.lock);
+	if (!READ_ONCE(prGlueInfo->fgMonStopping) &&
+	    prGlueInfo->prMonDevHandler == prMonDev &&
+	    READ_ONCE(prGlueInfo->fgIsEnableMon)) {
+		WRITE_ONCE(prGlueInfo->fgMonTxReady, TRUE);
+		fgReady = TRUE;
+	}
+	spin_unlock_bh(&prGlueInfo->rMonTxQueue.lock);
+	mutex_unlock(&prGlueInfo->monLifecycleLock);
+
+	if (fgReady)
+		netif_tx_start_all_queues(prMonDev);
+}
+
+void wlanDestroyMonitorNetdev(struct GLUE_INFO *prGlueInfo,
+			      bool fgIsRtnlLockAcquired)
+{
+	struct net_device *prMonDev;
+	bool bHasWdev;
+	bool fgRtnlLocked;
+
+	if (!prGlueInfo)
+		return;
+
+	fgRtnlLocked = rtnl_is_locked();
+	if (!fgRtnlLocked)
+		rtnl_lock();
+	mutex_lock(&prGlueInfo->monLifecycleLock);
+	spin_lock_bh(&prGlueInfo->rMonTxQueue.lock);
+	prMonDev = prGlueInfo->prMonDevHandler;
+	if (!prMonDev) {
+		spin_unlock_bh(&prGlueInfo->rMonTxQueue.lock);
+		mutex_unlock(&prGlueInfo->monLifecycleLock);
+		if (!fgRtnlLocked)
+			rtnl_unlock();
+		return;
+	}
+	bHasWdev = prMonDev->ieee80211_ptr != NULL;
+	if (!fgIsRtnlLockAcquired &&
+	    !READ_ONCE(prGlueInfo->fgMonStopping) &&
+	    (bHasWdev || READ_ONCE(prGlueInfo->fgIsEnableMon))) {
+		spin_unlock_bh(&prGlueInfo->rMonTxQueue.lock);
+		mutex_unlock(&prGlueInfo->monLifecycleLock);
+		if (!fgRtnlLocked)
+			rtnl_unlock();
+		return;
+	}
+	WRITE_ONCE(prGlueInfo->fgIsEnableMon, FALSE);
+	WRITE_ONCE(prGlueInfo->fgMonTxReady, FALSE);
+	WRITE_ONCE(prGlueInfo->prMonDevHandler, NULL);
+	WRITE_ONCE(prGlueInfo->fgIsCfg80211Monitor, FALSE);
+	spin_unlock_bh(&prGlueInfo->rMonTxQueue.lock);
+	mutex_unlock(&prGlueInfo->monLifecycleLock);
+
+	netif_tx_disable(prMonDev);
+	cancel_work_sync(&prGlueInfo->monTxWork);
+	skb_queue_purge(&prGlueInfo->rMonTxQueue);
+
+	if (bHasWdev && fgIsRtnlLockAcquired) {
+#if KERNEL_VERSION(5, 12, 0) <= CFG80211_VERSION_CODE
+		cfg80211_unregister_netdevice(prMonDev);
+#else
+		unregister_netdevice(prMonDev);
+#endif
+	} else {
+		if (!bHasWdev)
+			prMonDev->needs_free_netdev = TRUE;
+		unregister_netdevice(prMonDev);
+	}
+	if (!fgRtnlLocked)
+		rtnl_unlock();
+}
 
 void wlanMonWorkHandler(struct work_struct *work)
 {
 	struct GLUE_INFO *prGlueInfo;
+	struct net_device *prMonDev;
+	bool fgEnable;
+	int i4Err;
 
 	prGlueInfo = container_of(work, struct GLUE_INFO, monWork);
 
-	if (prGlueInfo->fgIsEnableMon) {
-		if (prGlueInfo->prMonDevHandler)
-			return;
-#if KERNEL_VERSION(3, 18, 0) <= LINUX_VERSION_CODE
-		prGlueInfo->prMonDevHandler =
-			alloc_netdev_mq(sizeof(struct NETDEV_PRIVATE_GLUE_INFO),
-					NIC_MONITOR_INF_NAME,
-					NET_NAME_PREDICTABLE, ether_setup,
-					CFG_MAX_TXQ_NUM);
-#else
-		prGlueInfo->prMonDevHandler =
-			alloc_netdev_mq(sizeof(struct NETDEV_PRIVATE_GLUE_INFO),
-					NIC_MONITOR_INF_NAME,
-					ether_setup, CFG_MAX_TXQ_NUM);
-#endif
-		if (prGlueInfo->prMonDevHandler == NULL) {
-			DBGLOG(INIT, ERROR,
-			       "wlanMonWorkHandler: Allocated prMonDevHandler context FAIL.\n");
-			return;
-		}
+	mutex_lock(&prGlueInfo->monLifecycleLock);
+	if (READ_ONCE(prGlueInfo->fgMonStopping) ||
+	    READ_ONCE(prGlueInfo->fgIsCfg80211Monitor)) {
+		mutex_unlock(&prGlueInfo->monLifecycleLock);
+		return;
+	}
+	fgEnable = READ_ONCE(prGlueInfo->fgIsEnableMon);
+	mutex_unlock(&prGlueInfo->monLifecycleLock);
 
-		((struct NETDEV_PRIVATE_GLUE_INFO *) netdev_priv(
-			 prGlueInfo->prMonDevHandler))->prGlueInfo = prGlueInfo;
-		prGlueInfo->prMonDevHandler->type =
-			ARPHRD_IEEE80211_RADIOTAP;
-		prGlueInfo->prMonDevHandler->netdev_ops =
-			&wlan_mon_netdev_ops;
-		netif_carrier_off(prGlueInfo->prMonDevHandler);
-		netif_tx_stop_all_queues(prGlueInfo->prMonDevHandler);
-		kalResetStats(prGlueInfo->prMonDevHandler);
-
-		if (register_netdev(prGlueInfo->prMonDevHandler) < 0) {
-			DBGLOG(INIT, ERROR,
-			       "wlanMonWorkHandler: Registered prMonDevHandler context FAIL.\n");
-			free_netdev(prGlueInfo->prMonDevHandler);
-			prGlueInfo->prMonDevHandler = NULL;
+	if (fgEnable) {
+		if (READ_ONCE(prGlueInfo->prMonDevHandler))
+			return;
+		prMonDev = wlanCreateMonitorNetdev(prGlueInfo, wlanGetWiphy(),
+						   NIC_MONITOR_INF_NAME, NULL);
+		if (IS_ERR(prMonDev)) {
+			i4Err = PTR_ERR(prMonDev);
+			if (i4Err != -EEXIST && i4Err != -ECANCELED &&
+			    i4Err != -ESHUTDOWN) {
+				WRITE_ONCE(prGlueInfo->fgIsEnableMon, FALSE);
+				DBGLOG(INIT, ERROR,
+				       "monitor netdev creation failed: %d\n",
+				       i4Err);
+			}
 		}
-		DBGLOG(INIT, INFO,
-		       "wlanMonWorkHandler: Registered prMonDevHandler context DONE.\n");
 	} else {
-		if (prGlueInfo->prMonDevHandler) {
-			unregister_netdev(prGlueInfo->prMonDevHandler);
-			prGlueInfo->prMonDevHandler = NULL;
-			DBGLOG(INIT, INFO,
-			       "wlanMonWorkHandler: unRegistered prMonDevHandler context DONE.\n");
-		}
+		wlanDestroyMonitorNetdev(prGlueInfo, FALSE);
 	}
 }
 #endif
@@ -3059,12 +3246,8 @@ static void wlanNetUnregister(struct wireless_dev *prWdev)
 #endif
 
 #if CFG_SUPPORT_SNIFFER
-	if (prGlueInfo->prMonDevHandler) {
-		unregister_netdev(prGlueInfo->prMonDevHandler);
-		/* FIXME: Why not free_netdev()? */
-		prGlueInfo->prMonDevHandler = NULL;
-	}
-	prGlueInfo->fgIsEnableMon = FALSE;
+	wlanDestroyMonitorNetdev(prGlueInfo, FALSE);
+	WRITE_ONCE(prGlueInfo->fgIsEnableMon, FALSE);
 #endif
 
 }				/* end of wlanNetUnregister() */
@@ -3225,6 +3408,7 @@ static void wlanCreateWirelessDevice(void)
 		goto free_wiphy;
 	}
 	kalMemSet(prGlueInfo, 0, sizeof(struct GLUE_INFO));
+	atomic64_set(&prGlueInfo->u8Cookie, 0);
 	*((struct GLUE_INFO **) wiphy_priv(prWiphy)) = prGlueInfo;
 
 	/* 4 <1.3> configure wireless_dev & wiphy */
@@ -3252,6 +3436,9 @@ static void wlanCreateWirelessDevice(void)
 #endif /* CFG_SUPPORT_SCHED_SCAN */
 	prWiphy->interface_modes = BIT(NL80211_IFTYPE_STATION) |
 				   BIT(NL80211_IFTYPE_ADHOC);
+#if CFG_SUPPORT_SNIFFER
+	prWiphy->interface_modes |= BIT(NL80211_IFTYPE_MONITOR);
+#endif
 	prWiphy->bands[KAL_BAND_2GHZ] = &mtk_band_2ghz;
 	/* always assign 5Ghz bands here, if the chip is not support 5Ghz,
 	 *  bands[KAL_BAND_5GHZ] will be assign to NULL
@@ -3726,7 +3913,10 @@ struct wireless_dev *wlanNetCreate(void *pvData,
 	prGlueInfo->prDevHandler = gprWdev[0]->netdev;
 
 #if CFG_SUPPORT_SNIFFER
+	mutex_init(&prGlueInfo->monLifecycleLock);
 	INIT_WORK(&(prGlueInfo->monWork), wlanMonWorkHandler);
+	skb_queue_head_init(&prGlueInfo->rMonTxQueue);
+	INIT_WORK(&(prGlueInfo->monTxWork), wlanMonTxWorkHandler);
 #endif
 
 	prGlueInfo->ePowerState = ParamDeviceStateD0;
@@ -6555,6 +6745,9 @@ static void wlanRemove(void)
 	struct ADAPTER *prAdapter = NULL;
 	u_int8_t fgResult = FALSE;
 	uint8_t i;
+#if CFG_SUPPORT_SNIFFER
+	struct net_device *prMonDev = NULL;
+#endif
 
 	DBGLOG(INIT, INFO, "Remove wlan!\n");
 
@@ -6638,6 +6831,22 @@ static void wlanRemove(void)
 #if WLAN_INCLUDE_SYS
 	sysRemoveSysfs();
 #endif /* WLAN_INCLUDE_SYS */
+
+#if CFG_SUPPORT_SNIFFER
+	mutex_lock(&prGlueInfo->monLifecycleLock);
+	WRITE_ONCE(prGlueInfo->fgMonStopping, TRUE);
+	mutex_unlock(&prGlueInfo->monLifecycleLock);
+	cancel_work_sync(&prGlueInfo->monWork);
+	spin_lock_bh(&prGlueInfo->rMonTxQueue.lock);
+	prMonDev = prGlueInfo->prMonDevHandler;
+	if (prMonDev)
+		dev_hold(prMonDev);
+	spin_unlock_bh(&prGlueInfo->rMonTxQueue.lock);
+	if (prMonDev) {
+		wlanMonStopTx(prGlueInfo, prMonDev);
+		dev_put(prMonDev);
+	}
+#endif
 
 	prAdapter = prGlueInfo->prAdapter;
 	kalPerMonDestroy(prGlueInfo);

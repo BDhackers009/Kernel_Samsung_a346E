@@ -76,8 +76,11 @@
 #include "gl_wext.h"
 #include "precomp.h"
 #include <linux/can/netlink.h>
+#include <asm/unaligned.h>
 #include <net/netlink.h>
 #include <net/cfg80211.h>
+#include <linux/ieee80211.h>
+#include <net/ieee80211_radiotap.h>
 #include "gl_cfg80211.h"
 #include "gl_vendor.h"
 #include "gl_p2p_os.h"
@@ -2491,7 +2494,7 @@ int mtk_cfg80211_remain_on_channel(struct wiphy *wiphy,
 		if (!IS_BSS_INDEX_VALID(ucBssIndex))
 			return -EINVAL;
 
-		*cookie = prGlueInfo->u8Cookie++;
+		*cookie = atomic64_fetch_inc(&prGlueInfo->u8Cookie);
 
 		prMsgChnlReq = cnmMemAlloc(prGlueInfo->prAdapter,
 			   RAM_TYPE_MSG, sizeof(struct MSG_REMAIN_ON_CHANNEL));
@@ -2619,7 +2622,7 @@ int _mtk_cfg80211_mgmt_tx(struct wiphy *wiphy,
 		WIPHY_PRIV(wiphy, prGlueInfo);
 		ASSERT(prGlueInfo);
 
-		*cookie = prGlueInfo->u8Cookie++;
+		*cookie = atomic64_fetch_inc(&prGlueInfo->u8Cookie);
 
 		prMsgTxReq = cnmMemAlloc(prGlueInfo->prAdapter,
 				RAM_TYPE_MSG,
@@ -2815,6 +2818,101 @@ int mtk_cfg80211_mgmt_tx_cancel_wait(struct wiphy *wiphy,
 
 	return i4Rslt;
 }
+
+#if CFG_SUPPORT_SNIFFER
+netdev_tx_t wlanMonXmit(struct sk_buff *prSkb, struct net_device *prDev)
+{
+	struct NETDEV_PRIVATE_GLUE_INFO *prNetDevPriv;
+	struct GLUE_INFO *prGlueInfo;
+
+	if (!prSkb)
+		return NETDEV_TX_OK;
+	if (!prDev) {
+		dev_kfree_skb(prSkb);
+		return NETDEV_TX_OK;
+	}
+
+	prNetDevPriv = (struct NETDEV_PRIVATE_GLUE_INFO *)
+		       netdev_priv(prDev);
+	prGlueInfo = prNetDevPriv->prGlueInfo;
+	if (!prGlueInfo) {
+		prDev->stats.tx_dropped++;
+		dev_kfree_skb(prSkb);
+		return NETDEV_TX_OK;
+	}
+
+	spin_lock_bh(&prGlueInfo->rMonTxQueue.lock);
+	if (!READ_ONCE(prGlueInfo->fgMonTxReady) ||
+	    prGlueInfo->prMonDevHandler != prDev ||
+	    prGlueInfo->rMonTxQueue.qlen >= 64) {
+		spin_unlock_bh(&prGlueInfo->rMonTxQueue.lock);
+		prDev->stats.tx_dropped++;
+		dev_kfree_skb(prSkb);
+		return NETDEV_TX_OK;
+	}
+
+	__skb_queue_tail(&prGlueInfo->rMonTxQueue, prSkb);
+	schedule_work(&prGlueInfo->monTxWork);
+	spin_unlock_bh(&prGlueInfo->rMonTxQueue.lock);
+	return NETDEV_TX_OK;
+}
+
+void wlanMonTxWorkHandler(struct work_struct *work)
+{
+	struct GLUE_INFO *prGlueInfo;
+	struct sk_buff *prSkb;
+	struct net_device *prDev;
+	struct wireless_dev *prWdev;
+	struct ieee80211_radiotap_header *prRadiotap;
+	struct cfg80211_mgmt_tx_params rParams = {0};
+	const u8 *pucFrame;
+	uint16_t u2RadiotapLen;
+	uint16_t u2FrameCtrl;
+	uint64_t u8Cookie;
+	int32_t i4Rslt;
+
+	prGlueInfo = container_of(work, struct GLUE_INFO, monTxWork);
+
+	while ((prSkb = skb_dequeue(&prGlueInfo->rMonTxQueue))) {
+		prDev = prSkb->dev;
+		prWdev = prDev ? prDev->ieee80211_ptr : NULL;
+		if (!READ_ONCE(prGlueInfo->fgMonTxReady) ||
+		    prDev != READ_ONCE(prGlueInfo->prMonDevHandler) ||
+		    !prDev || !prWdev ||
+		    prSkb->len < sizeof(*prRadiotap) + WLAN_MAC_MGMT_HEADER_LEN)
+			goto drop;
+
+		prRadiotap = (struct ieee80211_radiotap_header *)prSkb->data;
+		if (prRadiotap->it_version != 0)
+			goto drop;
+
+		u2RadiotapLen = le16_to_cpu(prRadiotap->it_len);
+		if (u2RadiotapLen < sizeof(*prRadiotap) ||
+		    u2RadiotapLen > prSkb->len ||
+		    prSkb->len - u2RadiotapLen < WLAN_MAC_MGMT_HEADER_LEN)
+			goto drop;
+
+		pucFrame = prSkb->data + u2RadiotapLen;
+		u2FrameCtrl = get_unaligned_le16(pucFrame);
+		if ((u2FrameCtrl & IEEE80211_FCTL_FTYPE) != IEEE80211_FTYPE_MGMT)
+			goto drop;
+
+		rParams.buf = pucFrame;
+		rParams.len = prSkb->len - u2RadiotapLen;
+		rParams.dont_wait_for_ack = false;
+		i4Rslt = _mtk_cfg80211_mgmt_tx(prWdev->wiphy, prWdev,
+					       rParams.chan, rParams.offchan,
+					       rParams.wait, rParams.buf, rParams.len,
+					       rParams.no_cck,
+					       rParams.dont_wait_for_ack, &u8Cookie);
+		if (i4Rslt)
+			prDev->stats.tx_dropped++;
+
+drop:
+		dev_kfree_skb(prSkb);
+	}
+}
+#endif
 
 #ifdef CONFIG_NL80211_TESTMODE
 #if CFG_SUPPORT_WAPI
@@ -7903,6 +8001,42 @@ int mtk_cfg_channel_switch(struct wiphy *wiphy,
 #endif
 #endif
 
+#if CFG_SUPPORT_SNIFFER
+static uint32_t wlanMonitorSetFirmware(struct GLUE_INFO *prGlueInfo,
+				       bool fgEnable)
+{
+	struct PARAM_CUSTOM_MONITOR_SET_STRUCT rMonitorSetInfo = {0};
+	struct BSS_INFO *prBssInfo;
+	enum ENUM_BAND eBand;
+	uint8_t ucChannel;
+	uint32_t u4BufLen = 0;
+
+	if (!prGlueInfo || !prGlueInfo->prAdapter)
+		return WLAN_STATUS_INVALID_DATA;
+
+	prBssInfo = aisGetAisBssInfo(prGlueInfo->prAdapter, AIS_DEFAULT_INDEX);
+	eBand = prBssInfo ? prBssInfo->eBand : BAND_NULL;
+	ucChannel = prBssInfo ? prBssInfo->ucPrimaryChannel : 0;
+	if (eBand == BAND_NULL)
+		eBand = ucChannel && ucChannel > 14 ? BAND_5G : BAND_2G4;
+	if (!ucChannel) {
+		if (eBand == BAND_5G)
+			ucChannel = 36;
+		else
+			ucChannel = 1;
+	}
+
+	rMonitorSetInfo.ucEnable = fgEnable ? 1 : 0;
+	rMonitorSetInfo.ucBand = eBand;
+	rMonitorSetInfo.ucPriChannel = ucChannel;
+	rMonitorSetInfo.ucSco = CHNL_EXT_SCN;
+	rMonitorSetInfo.ucChannelWidth = CW_20_40MHZ;
+
+	return kalIoctl(prGlueInfo, wlanoidSetMonitor, &rMonitorSetInfo,
+			sizeof(rMonitorSetInfo), FALSE, FALSE, TRUE, &u4BufLen);
+}
+#endif
+
 #if KERNEL_VERSION(4, 12, 0) <= CFG80211_VERSION_CODE
 struct wireless_dev *mtk_cfg_add_iface(struct wiphy *wiphy,
 				       const char *name,
@@ -7925,6 +8059,11 @@ struct wireless_dev *mtk_cfg_add_iface(struct wiphy *wiphy,
 #endif
 {
 	struct GLUE_INFO *prGlueInfo = NULL;
+#if CFG_SUPPORT_SNIFFER
+	struct wireless_dev *prWdev = NULL;
+	struct net_device *prMonDev;
+	int32_t i4Rslt;
+#endif
 #if KERNEL_VERSION(4, 12, 0) <= CFG80211_VERSION_CODE
 	u32 *flags = NULL;
 #endif
@@ -7935,6 +8074,49 @@ struct wireless_dev *mtk_cfg_add_iface(struct wiphy *wiphy,
 		DBGLOG(REQ, WARN, "driver is not ready\n");
 		return ERR_PTR(-EFAULT);
 	}
+
+#if CFG_SUPPORT_SNIFFER
+	if (type == NL80211_IFTYPE_MONITOR) {
+		if (params && (params->flags & MONITOR_FLAG_CHANGED)) {
+			DBGLOG(REQ, WARN,
+			       "monitor creation flags are unsupported\n");
+			return ERR_PTR(-EOPNOTSUPP);
+		}
+		prWdev = kzalloc(sizeof(struct wireless_dev), GFP_KERNEL);
+		if (!prWdev)
+			return ERR_PTR(-ENOMEM);
+
+		prMonDev = wlanCreateMonitorNetdev(prGlueInfo, wiphy, name,
+						   prWdev);
+		if (IS_ERR(prMonDev)) {
+			i4Rslt = PTR_ERR(prMonDev);
+			kfree(prWdev);
+			return ERR_PTR(i4Rslt);
+		}
+
+		mutex_lock(&prGlueInfo->monLifecycleLock);
+		if (READ_ONCE(prGlueInfo->fgMonStopping)) {
+			mutex_unlock(&prGlueInfo->monLifecycleLock);
+			wlanDestroyMonitorNetdev(prGlueInfo, TRUE);
+			return ERR_PTR(-ESHUTDOWN);
+		}
+		WRITE_ONCE(prGlueInfo->fgIsEnableMon, TRUE);
+		if (wlanMonitorSetFirmware(prGlueInfo, TRUE) !=
+		    WLAN_STATUS_SUCCESS) {
+			WRITE_ONCE(prGlueInfo->fgIsEnableMon, FALSE);
+			wlanMonitorSetFirmware(prGlueInfo, FALSE);
+			mutex_unlock(&prGlueInfo->monLifecycleLock);
+			wlanDestroyMonitorNetdev(prGlueInfo, TRUE);
+			return ERR_PTR(-EIO);
+		}
+		mutex_unlock(&prGlueInfo->monLifecycleLock);
+
+		wlanMonStartTx(prGlueInfo, prMonDev);
+		DBGLOG(REQ, WARN,
+		       "monitor active: RX is dedicated; normal data reception pauses\n");
+		return prWdev;
+	}
+#endif
 
 	/* TODO: error handele for the non-P2P interface */
 
@@ -7957,6 +8139,9 @@ int mtk_cfg_del_iface(struct wiphy *wiphy,
 		      struct wireless_dev *wdev)
 {
 	struct GLUE_INFO *prGlueInfo = NULL;
+#if CFG_SUPPORT_SNIFFER
+	uint32_t u4Status;
+#endif
 
 	WIPHY_PRIV(wiphy, prGlueInfo);
 
@@ -7964,6 +8149,34 @@ int mtk_cfg_del_iface(struct wiphy *wiphy,
 		DBGLOG(REQ, WARN, "driver is not ready\n");
 		return -EFAULT;
 	}
+
+#if CFG_SUPPORT_SNIFFER
+	if (wdev && wdev->iftype == NL80211_IFTYPE_MONITOR) {
+		if (!wdev->netdev || prGlueInfo->prMonDevHandler != wdev->netdev)
+			return -EINVAL;
+
+		mutex_lock(&prGlueInfo->monLifecycleLock);
+		if (READ_ONCE(prGlueInfo->fgMonStopping)) {
+			mutex_unlock(&prGlueInfo->monLifecycleLock);
+			return -ESHUTDOWN;
+		}
+		wlanMonStopTx(prGlueInfo, wdev->netdev);
+		u4Status = wlanMonitorSetFirmware(prGlueInfo, FALSE);
+		if (u4Status != WLAN_STATUS_SUCCESS) {
+			DBGLOG(REQ, ERROR,
+			       "monitor firmware disable failed: 0x%x\n",
+			       u4Status);
+			mutex_unlock(&prGlueInfo->monLifecycleLock);
+			wlanMonStartTx(prGlueInfo, wdev->netdev);
+			return -EIO;
+		}
+
+		WRITE_ONCE(prGlueInfo->fgIsEnableMon, FALSE);
+		mutex_unlock(&prGlueInfo->monLifecycleLock);
+		wlanDestroyMonitorNetdev(prGlueInfo, TRUE);
+		return 0;
+	}
+#endif
 
 	/* TODO: error handele for the non-P2P interface */
 #if (CFG_ENABLE_WIFI_DIRECT_CFG_80211 == 0)
@@ -8008,6 +8221,23 @@ int mtk_cfg_change_iface(struct wiphy *wiphy,
 		DBGLOG(REQ, WARN, "ndev is NULL\n");
 		return -EINVAL;
 	}
+
+#if CFG_SUPPORT_SNIFFER
+	if (ndev->ieee80211_ptr &&
+	    (ndev->ieee80211_ptr->iftype == NL80211_IFTYPE_MONITOR ||
+	     type == NL80211_IFTYPE_MONITOR)) {
+		if (ndev->ieee80211_ptr->iftype == type) {
+			if (params && (params->flags & MONITOR_FLAG_CHANGED)) {
+				DBGLOG(REQ, WARN,
+				       "monitor flag changes are unsupported\n");
+				return -EOPNOTSUPP;
+			}
+			return 0;
+		}
+		DBGLOG(REQ, WARN, "monitor interface type change unsupported\n");
+		return -EOPNOTSUPP;
+	}
+#endif
 
 	prNetdevPriv = (struct NETDEV_PRIVATE_GLUE_INFO *)
 		       netdev_priv(ndev);

@@ -339,6 +339,11 @@ void mtk_cfg80211_mgmt_frame_register(IN struct wiphy *wiphy,
 int mtk_cfg80211_mgmt_tx_cancel_wait(struct wiphy *wiphy,
 				     struct wireless_dev *wdev, u64 cookie);
 
+#if CFG_SUPPORT_SNIFFER
+netdev_tx_t wlanMonXmit(struct sk_buff *prSkb, struct net_device *prDev);
+void wlanMonTxWorkHandler(struct work_struct *work);
+#endif
+
 #ifdef CONFIG_NL80211_TESTMODE
 int
 mtk_cfg80211_testmode_get_sta_statistics(IN struct wiphy

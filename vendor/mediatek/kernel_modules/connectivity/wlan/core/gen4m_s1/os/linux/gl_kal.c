@@ -1197,6 +1197,10 @@ uint32_t kalRxIndicateOnePkt(IN struct GLUE_INFO
 	uint8_t ucBssIdx;
 #if CFG_SUPPORT_RX_GRO
 	struct NETDEV_PRIVATE_GLUE_INFO *prNetDevPrivate = NULL;
+	bool fgUseGro = TRUE;
+#endif
+#if CFG_SUPPORT_SNIFFER
+	struct net_device *prMonDev = NULL;
 #endif
 
 	ASSERT(prGlueInfo);
@@ -1237,11 +1241,26 @@ uint32_t kalRxIndicateOnePkt(IN struct GLUE_INFO
 	if (!prNetDev)
 		prNetDev = prGlueInfo->prDevHandler;
 #if CFG_SUPPORT_SNIFFER
-	if (prGlueInfo->fgIsEnableMon)
-		prNetDev = prGlueInfo->prMonDevHandler;
+	if (READ_ONCE(prGlueInfo->fgIsEnableMon)) {
+		spin_lock_bh(&prGlueInfo->rMonTxQueue.lock);
+		prMonDev = prGlueInfo->prMonDevHandler;
+		if (prMonDev)
+			dev_hold(prMonDev);
+		spin_unlock_bh(&prGlueInfo->rMonTxQueue.lock);
+		if (!prMonDev) {
+			dev_kfree_skb(prSkb);
+			return WLAN_STATUS_FAILURE;
+		}
+		prNetDev = prMonDev;
+	}
 #endif
-	if (prNetDev->dev_addr == NULL) {
+	if (!prNetDev || prNetDev->dev_addr == NULL) {
 		DBGLOG(RX, WARN, "dev_addr == NULL\n");
+#if CFG_SUPPORT_SNIFFER
+		if (prMonDev)
+			dev_put(prMonDev);
+#endif
+		dev_kfree_skb(prSkb);
 		return WLAN_STATUS_FAILURE;
 	}
 
@@ -1303,7 +1322,7 @@ uint32_t kalRxIndicateOnePkt(IN struct GLUE_INFO
 #endif
 
 #if CFG_SUPPORT_SNIFFER
-	if (prGlueInfo->fgIsEnableMon) {
+	if (prMonDev) {
 		skb_reset_mac_header(prSkb);
 		prSkb->ip_summed = CHECKSUM_UNNECESSARY;
 		prSkb->pkt_type = PACKET_OTHERHOST;
@@ -1376,7 +1395,10 @@ uint32_t kalRxIndicateOnePkt(IN struct GLUE_INFO
 #endif
 #endif
 
-	if (ucBssIdx < MAX_BSSID_NUM &&
+#if CFG_SUPPORT_SNIFFER
+	fgUseGro = !prMonDev;
+#endif
+	if (fgUseGro && ucBssIdx < MAX_BSSID_NUM &&
 		kal_is_skb_gro(prGlueInfo->prAdapter, ucBssIdx)) {
 		/* GRO receive function can't be interrupt so it need to
 		 * disable preempt and protect by spin lock
@@ -1390,6 +1412,10 @@ uint32_t kalRxIndicateOnePkt(IN struct GLUE_INFO
 		spin_unlock_bh(&prNetDevPrivate->napi_spinlock);
 		preempt_enable();
 		DBGLOG_LIMITED(INIT, TRACE, "napi_gro_receive:%p\n", prNetDev);
+#if CFG_SUPPORT_SNIFFER
+		if (prMonDev)
+			dev_put(prMonDev);
+#endif
 		return WLAN_STATUS_SUCCESS;
 	}
 #endif
@@ -1409,6 +1435,10 @@ skip_gro:
 		netif_rx(prSkb);
 #endif
 
+#if CFG_SUPPORT_SNIFFER
+	if (prMonDev)
+		dev_put(prMonDev);
+#endif
 
 	return WLAN_STATUS_SUCCESS;
 }

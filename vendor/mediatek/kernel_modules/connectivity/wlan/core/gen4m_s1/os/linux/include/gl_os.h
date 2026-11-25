@@ -131,6 +131,7 @@
  *******************************************************************************
  */
 #include <linux/version.h>	/* constant of kernel version */
+#include <linux/atomic.h>
 
 #include <linux/kernel.h>	/* bitops.h */
 
@@ -618,7 +619,7 @@ struct GLUE_INFO {
 	/* semaphore for ioctl */
 	struct semaphore ioctl_sem;
 
-	uint64_t u8Cookie;
+	atomic64_t u8Cookie;
 
 	unsigned long ulFlag;		/* GLUE_FLAG_XXX */
 	uint32_t u4PendFlag;
@@ -811,8 +812,14 @@ struct GLUE_INFO {
 
 #if CFG_SUPPORT_SNIFFER
 	u_int8_t fgIsEnableMon;
+	u_int8_t fgIsCfg80211Monitor;
+	bool fgMonStopping;
+	struct mutex monLifecycleLock;
 	struct net_device *prMonDevHandler;
 	struct work_struct monWork;
+	struct sk_buff_head rMonTxQueue;
+	struct work_struct monTxWork;
+	bool fgMonTxReady;
 #endif
 
 	int32_t i4RssiCache[BSSID_NUM];
@@ -1334,6 +1341,17 @@ void p2pSetMulticastListWorkQueueWrapper(struct GLUE_INFO
 #endif
 
 struct GLUE_INFO *wlanGetGlueInfo(void);
+
+#if CFG_SUPPORT_SNIFFER
+struct net_device *wlanCreateMonitorNetdev(struct GLUE_INFO *prGlueInfo,
+					   struct wiphy *prWiphy,
+					   const char *pcName,
+					   struct wireless_dev *prWdev);
+void wlanMonStopTx(struct GLUE_INFO *prGlueInfo, struct net_device *prMonDev);
+void wlanMonStartTx(struct GLUE_INFO *prGlueInfo, struct net_device *prMonDev);
+void wlanDestroyMonitorNetdev(struct GLUE_INFO *prGlueInfo,
+			      bool fgIsRtnlLockAcquired);
+#endif
 #if KERNEL_VERSION(5, 4, 0) <= LINUX_VERSION_CODE
 u16 wlanSelectQueue(struct net_device *dev,
 		    struct sk_buff *skb,

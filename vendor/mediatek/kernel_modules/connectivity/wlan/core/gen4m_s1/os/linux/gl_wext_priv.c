@@ -11947,6 +11947,7 @@ int priv_driver_set_monitor(IN struct net_device *prNetDev, IN char *pcCommand,
 	u_int8_t fgIsLegalChannel = FALSE;
 	u_int8_t fgError = FALSE;
 	u_int8_t fgEnable = FALSE;
+	u_int8_t fgScheduleWork = FALSE;
 	enum ENUM_BAND eBand = BAND_NULL;
 	uint32_t u4Parse = 0;
 	int32_t u4Ret = 0;
@@ -11955,6 +11956,16 @@ int priv_driver_set_monitor(IN struct net_device *prNetDev, IN char *pcCommand,
 	if (GLUE_CHK_PR2(prNetDev, pcCommand) == FALSE)
 		return -1;
 	prGlueInfo = *((struct GLUE_INFO **) netdev_priv(prNetDev));
+	mutex_lock(&prGlueInfo->monLifecycleLock);
+	if (READ_ONCE(prGlueInfo->fgMonStopping) ||
+	    READ_ONCE(prGlueInfo->fgIsCfg80211Monitor)) {
+		mutex_unlock(&prGlueInfo->monLifecycleLock);
+		i4BytesWritten = kalSnprintf(pcCommand, i4TotalLen,
+			READ_ONCE(prGlueInfo->fgMonStopping) ?
+			"driver stopping" :
+			"cfg80211 monitor active; remove it with iw del");
+		return i4BytesWritten;
+	}
 	prAdapter = prGlueInfo->prAdapter;
 
 	wlanCfgParseArgument(pcCommand, &i4Argc, apcArgv);
@@ -11994,7 +12005,7 @@ int priv_driver_set_monitor(IN struct net_device *prNetDev, IN char *pcCommand,
 			i4BytesWritten = kalSnprintf(pcCommand, i4TotalLen,
 						  "Illegal primary channel %d",
 						  ucPriChannel);
-			return i4BytesWritten;
+			goto out_unlock;
 		}
 
 		switch (ucChannelWidth) {
@@ -12051,14 +12062,14 @@ int priv_driver_set_monitor(IN struct net_device *prNetDev, IN char *pcCommand,
 			    kalSnprintf(pcCommand, i4TotalLen,
 				     "Invalid primary channel %d with bandwidth %d",
 				     ucPriChannel, ucChannelWidth);
-			return i4BytesWritten;
+			goto out_unlock;
 		}
 
 		fgEnable = (ucEnable) ? TRUE : FALSE;
 
-		if (prGlueInfo->fgIsEnableMon != fgEnable) {
-			prGlueInfo->fgIsEnableMon = fgEnable;
-			schedule_work(&prGlueInfo->monWork);
+		if (READ_ONCE(prGlueInfo->fgIsEnableMon) != fgEnable) {
+			WRITE_ONCE(prGlueInfo->fgIsEnableMon, fgEnable);
+			fgScheduleWork = TRUE;
 		}
 
 		kalMemZero(&rMonitorSetInfo, sizeof(rMonitorSetInfo));
@@ -12073,18 +12084,29 @@ int priv_driver_set_monitor(IN struct net_device *prNetDev, IN char *pcCommand,
 		rStatus = kalIoctl(prGlueInfo, wlanoidSetMonitor,
 				   &rMonitorSetInfo, sizeof(rMonitorSetInfo),
 				   FALSE, FALSE, TRUE, &u4BufLen);
+		if (rStatus != WLAN_STATUS_SUCCESS && fgEnable) {
+			WRITE_ONCE(prGlueInfo->fgIsEnableMon, FALSE);
+			fgScheduleWork = TRUE;
+			rMonitorSetInfo.ucEnable = 0;
+			kalIoctl(prGlueInfo, wlanoidSetMonitor,
+				 &rMonitorSetInfo, sizeof(rMonitorSetInfo),
+				 FALSE, FALSE, TRUE, &u4BufLen);
+		}
 
 		i4BytesWritten =
 		    kalSnprintf(pcCommand, i4TotalLen, "set monitor config %s",
 			     (rStatus == WLAN_STATUS_SUCCESS) ?
 			     "success" : "fail");
-
-		return i4BytesWritten;
+		if (fgScheduleWork)
+			schedule_work(&prGlueInfo->monWork);
+		goto out_unlock;
 	}
 
 	i4BytesWritten = kalSnprintf(pcCommand, i4TotalLen,
 				  "monitor [Enable][PriChannel][ChannelWidth][Sco]");
 
+out_unlock:
+	mutex_unlock(&prGlueInfo->monLifecycleLock);
 	return i4BytesWritten;
 }
 #endif

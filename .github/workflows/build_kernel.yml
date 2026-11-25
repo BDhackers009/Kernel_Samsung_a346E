@@ -237,6 +237,8 @@ jobs:
     outputs:
       image_size: ${{ steps.build.outputs.image_size }}
       image_sha: ${{ steps.build.outputs.image_sha }}
+      wlan_artifact: wlan-driver-${{ github.sha }}
+      wlan_sha: ${{ steps.wlan_module.outputs.sha }}
       artifact: ${{ steps.meta.outputs.artifact }}
       selinux: ${{ steps.meta.outputs.selinux }}
       ksu_tag: ${{ steps.ksu.outputs.ksu_tag }}
@@ -399,6 +401,75 @@ jobs:
             grep -q "SELinux permissive patch" build.log || echo "::warning::permissive requested but not confirmed in the log"
           fi
           ls -lh Image
+      - name: Collect WLAN module artifact
+        id: wlan_module
+        run: |
+          set -eu
+          module="$(find out -type f -name wlan_drv_gen4m_6877.ko -print -quit)"
+          [ -n "$module" ] || { echo "::error::wlan_drv_gen4m_6877.ko not found"; exit 1; }
+          mkdir -p wlan-artifact
+          cp -v Image "$module" wlan-artifact/
+          readelf -p .modinfo "$module" > wlan-artifact/module-info.txt
+          readelf -x __versions "$module" > wlan-artifact/module-versions.hex.txt
+          readelf -V "$module" > wlan-artifact/module-version-info.txt
+          readelf -sW "$module" > wlan-artifact/module-symbols.txt
+          mkdir -p wlan-artifact/modules
+          depends="$(readelf -p .modinfo "$module" | sed -n 's/^.*depends=//p')"
+          IFS=',' read -r -a deps <<< "$depends"
+          for dep in "${deps[@]}"; do
+            [ -n "$dep" ] || continue
+            dep_file="${dep//-/_}.ko"
+            found="$(find out -type f -name "$dep_file" -print -quit)"
+            if [ -n "$found" ]; then
+              cp -v "$found" wlan-artifact/modules/
+            else
+              echo "::warning::dependency module $dep ($dep_file) not found"
+            fi
+          done
+          (
+            cd wlan-artifact
+            sha256sum Image wlan_drv_gen4m_6877.ko > SHA256SUMS
+            find modules -type f -name '*.ko' -print0 | sort -z | \
+              xargs -0 -r sha256sum >> SHA256SUMS
+          )
+          git rev-parse HEAD > wlan-artifact/build-commit.txt
+          {
+            echo "A346E Stage 1 WLAN build artifact"
+            echo "KernelSU variant: ${KSU_VAR}"
+            echo "SELinux: ${PERMISSIVE}"
+            echo "This artifact is for ABI comparison only."
+            echo "Do not flash or load the module without separate explicit approval."
+          } > wlan-artifact/README.txt
+          mkdir -p wlan-artifact/build-metadata
+          find out -type f \( -name Module.symvers -o -name modules.order \
+            -o -name build.config -o -name .config \) -print0 | \
+            while IFS= read -r -d '' metadata; do
+              cp -v --parents "$metadata" wlan-artifact/build-metadata/
+            done
+          dep="$(dirname "$module")/modules.dep"
+          if [ ! -f "$dep" ]; then
+            dep="$(find out -type f -name modules.dep -print -quit)"
+          fi
+          if [ -n "$dep" ] && [ -f "$dep" ]; then
+            if grep 'wlan_drv_gen4m_6877\.ko:' "$dep" > wlan-artifact/wlan-modules.dep; then
+              cp -v "$dep" wlan-artifact/modules.dep
+            else
+              rm -f wlan-artifact/wlan-modules.dep
+              echo "::warning::WLAN dependency entry not found in $dep"
+            fi
+          else
+            echo "::warning::modules.dep not found"
+          fi
+          echo "module=$module" >> "$GITHUB_OUTPUT"
+          echo "sha=$(sha256sum "$module" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Upload WLAN module
+        uses: actions/upload-artifact@v6
+        with:
+          name: wlan-driver-${{ github.sha }}
+          path: wlan-artifact/
+          if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 6
       - name: Package AnyKernel3
         run: |
           set -eu
@@ -440,6 +511,7 @@ jobs:
             echo "| KernelSU | \`${{ needs.build.outputs.ksu_tag || 'n/a' }}\` (\`${{ needs.build.outputs.ksu_code || 'n/a' }}\`) |"
             echo "| SELinux | \`${{ needs.build.outputs.selinux || env.PERMISSIVE }}\` |"
             echo "| Image | \`${{ needs.build.outputs.image_size || 'n/a' }}\` sha256:\`${{ needs.build.outputs.image_sha || 'n/a' }}\` |"
+            echo "| WLAN module | \`${{ needs.build.outputs.wlan_artifact || 'n/a' }}\` sha256:\`${{ needs.build.outputs.wlan_sha || 'n/a' }}\` (module + matching Image + ABI metadata) |"
             echo "| Artifact | \`${{ needs.build.outputs.artifact || 'n/a' }}\` (flashable AnyKernel3 zip) |"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Open an issue when the build fails

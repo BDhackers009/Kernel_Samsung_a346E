@@ -405,6 +405,19 @@ static const struct wiphy_wowlan_support mtk_p2p_wowlan_support = {
 };
 #endif
 
+static const struct ieee80211_iface_limit mtk_sta_limits[] = {
+	{
+		.max = 3,
+		.types = BIT(NL80211_IFTYPE_STATION),
+	},
+#if CFG_SUPPORT_SNIFFER
+	{
+		.max = 1,
+		.types = BIT(NL80211_IFTYPE_MONITOR),
+	},
+#endif
+};
+
 static const struct ieee80211_iface_limit mtk_p2p_sta_go_limits[] = {
 	{
 		.max = 3,
@@ -416,6 +429,12 @@ static const struct ieee80211_iface_limit mtk_p2p_sta_go_limits[] = {
 		.types = BIT(NL80211_IFTYPE_P2P_GO)
 				| BIT(NL80211_IFTYPE_P2P_CLIENT),
 	},
+#if CFG_SUPPORT_SNIFFER
+	{
+		.max = 1,
+		.types = BIT(NL80211_IFTYPE_MONITOR),
+	},
+#endif
 };
 
 #if (CFG_SUPPORT_DFS_MASTER == 1)
@@ -440,8 +459,8 @@ mtk_iface_combinations_sta[] = {
 #endif /* CFG_NUM_DIFFERENT_CHANNELS_STA */
 		.max_interfaces = 3,
 		/*.beacon_int_infra_match = true,*/
-		.limits = mtk_p2p_sta_go_limits,
-		.n_limits = 1, /* include p2p */
+		.limits = mtk_sta_limits,
+		.n_limits = ARRAY_SIZE(mtk_sta_limits),
 	},
 };
 
