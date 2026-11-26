@@ -1275,11 +1275,12 @@ wext_get_freq(IN struct net_device *prNetDev,
 	    prNetDev->ieee80211_ptr->iftype == NL80211_IFTYPE_MONITOR &&
 	    prGlueInfo) {
 		mutex_lock(&prGlueInfo->monLifecycleLock);
-		if (prGlueInfo->fgMonChandefValid &&
+		if (READ_ONCE(prGlueInfo->fgMonChandefValid) &&
 		    prGlueInfo->rMonChandef.chan) {
-			prIwFreq->m =
-				(int) prGlueInfo->rMonChandef.chan->center_freq *
-				1000;
+			uint32_t u4Freq;
+
+			u4Freq = prGlueInfo->rMonChandef.chan->center_freq;
+			prIwFreq->m = (int) u4Freq * 1000;
 			prIwFreq->e = 3;
 			mutex_unlock(&prGlueInfo->monLifecycleLock);
 			return 0;

@@ -38,8 +38,10 @@ fi
 
 if [ "x${DEBUG}" == "x1" ]
 then
-DEBUG_ARGS="--sandbox_debug --verbose_failures ${EXTRA_KLEAF_ARGS:-}"
+DEBUG_ARGS="--sandbox_debug --verbose_failures"
 fi
+# Always honoured, regardless of DEBUG, so fast_build can disable LTO.
+DEBUG_ARGS="${DEBUG_ARGS:-} ${EXTRA_KLEAF_ARGS:-}"
 if [ -z ${SANDBOX} ]
 then
   SANDBOX=1

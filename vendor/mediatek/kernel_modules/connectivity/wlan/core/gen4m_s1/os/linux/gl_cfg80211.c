@@ -8091,7 +8091,7 @@ void wlanMonRetuneRearm(struct work_struct *work)
 	prMonDev = prGlueInfo->prMonDevHandler;
 	if (READ_ONCE(prGlueInfo->fgMonStopping) ||
 	    !READ_ONCE(prGlueInfo->fgIsCfg80211Monitor) ||
-	    !prMonDev || !prGlueInfo->fgMonChandefValid ||
+	    !prMonDev || !READ_ONCE(prGlueInfo->fgMonChandefValid) ||
 	    !prGlueInfo->rMonChandef.chan) {
 		mutex_unlock(&prGlueInfo->monLifecycleLock);
 		return;
@@ -8116,7 +8116,8 @@ void wlanMonRetuneRearm(struct work_struct *work)
 	u4Status = wlanMonitorSetFirmwareConfig(prGlueInfo, true, eBand,
 						ucChannel, CW_20_40MHZ,
 						CHNL_EXT_SCN);
-	WRITE_ONCE(prGlueInfo->fgMonRetuneActive, FALSE);
+	if (u4Status == WLAN_STATUS_SUCCESS)
+		WRITE_ONCE(prGlueInfo->fgMonRetuneActive, FALSE);
 	mutex_unlock(&prGlueInfo->monLifecycleLock);
 
 	if (u4Status == WLAN_STATUS_SUCCESS) {
@@ -8125,7 +8126,10 @@ void wlanMonRetuneRearm(struct work_struct *work)
 		       "monitor re-armed on channel %u (band %u)\n",
 		       ucChannel, eBand);
 	} else {
-		DBGLOG(REQ, WARN, "monitor re-arm failed: 0x%x\n", u4Status);
+		DBGLOG(REQ, WARN,
+		       "monitor re-arm failed: 0x%x (aborted=%u)\n",
+		       u4Status,
+		       READ_ONCE(prGlueInfo->fgMonRetuneAborted));
 	}
 }
 
@@ -8223,7 +8227,7 @@ int mtk_cfg_set_monitor_channel(struct wiphy *wiphy,
 	if (u4Status == WLAN_STATUS_SUCCESS) {
 		kalMemCopy(&prGlueInfo->rMonChandef, chandef,
 			   sizeof(prGlueInfo->rMonChandef));
-		prGlueInfo->fgMonChandefValid = TRUE;
+		WRITE_ONCE(prGlueInfo->fgMonChandefValid, TRUE);
 		WRITE_ONCE(prGlueInfo->fgMonRetuneAborted, FALSE);
 		WRITE_ONCE(prGlueInfo->fgMonRetuneActive, TRUE);
 		WRITE_ONCE(prGlueInfo->ulMonRetuneDeadline,
@@ -8232,7 +8236,7 @@ int mtk_cfg_set_monitor_channel(struct wiphy *wiphy,
 						   prChan->center_freq);
 		if (u4Status != WLAN_STATUS_SUCCESS) {
 			WRITE_ONCE(prGlueInfo->fgMonRetuneActive, FALSE);
-			prGlueInfo->fgMonChandefValid = FALSE;
+			WRITE_ONCE(prGlueInfo->fgMonChandefValid, FALSE);
 		} else {
 			/* Fallback: re-arm RX even if scan-complete is lost. */
 			mod_delayed_work(system_wq,
@@ -8246,7 +8250,8 @@ int mtk_cfg_set_monitor_channel(struct wiphy *wiphy,
 	    READ_ONCE(prGlueInfo->prMonDevHandler) == prMonDev)
 		wlanMonStartTx(prGlueInfo, prMonDev);
 
-	DBGLOG(REQ, INFO, "monitor channel set to %u, band %u, width %u, status %u\n",
+	DBGLOG(REQ, INFO,
+	       "monitor channel set to %u, band %u, width %u, status %u\n",
 	       ucChannel, eBand, ucChannelWidth, u4Status);
 	return u4Status == WLAN_STATUS_SUCCESS ? 0 : -EIO;
 }

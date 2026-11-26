@@ -2809,10 +2809,13 @@ void wlanDestroyMonitorNetdev(struct GLUE_INFO *prGlueInfo,
 	if (!prGlueInfo)
 		return;
 
+	/* Cancel before taking RTNL: the worker can sleep, and waiting for it
+	 * while holding RTNL is exactly the pattern we removed elsewhere.
+	 */
+	cancel_delayed_work_sync(&prGlueInfo->monRetuneWork);
 	fgRtnlLocked = rtnl_is_locked();
 	if (!fgRtnlLocked)
 		rtnl_lock();
-	cancel_delayed_work_sync(&prGlueInfo->monRetuneWork);
 	mutex_lock(&prGlueInfo->monLifecycleLock);
 	if (READ_ONCE(prGlueInfo->fgMonRetuneActive))
 		WRITE_ONCE(prGlueInfo->fgMonRetuneActive, FALSE);
