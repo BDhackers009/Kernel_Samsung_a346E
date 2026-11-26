@@ -26,6 +26,11 @@ on:
         type: boolean
         required: true
         default: false
+      runner:
+        description: "Runner label: ubuntu-22.04 (GitHub-hosted) or fast (self-hosted WSL)"
+        type: string
+        required: false
+        default: ubuntu-22.04
   push:
     branches: [A346E]
   pull_request:
@@ -41,11 +46,11 @@ env:
   KSU_VAR: ${{ github.event.inputs.ksu_variant || (github.event_name == 'push' && 'KSUN') || 'NO-ROOT' }}
   PERMISSIVE: ${{ github.event.inputs.permissive || 'false' }}
   CUSTOM_PATCH: ${{ github.event.inputs.custom_patches || 'false' }}
-  EXTRA_KLEAF_ARGS: ${{ github.event.inputs.fast_build == 'true' && '--lto=none' || '' }}
+  EXTRA_KLEAF_ARGS: ${{ github.event.inputs.fast_build == 'true' && '--lto=none' || '' }} ${{ github.event.inputs.runner == 'fast' && '--jobs=6 --local_ram_resources=6144' || '' }}
 jobs:
   detect:
     name: "#1 Checkout & Detect"
-    runs-on: ubuntu-22.04
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-22.04' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -83,7 +88,7 @@ jobs:
   system-prep:
     name: "#2 System Prep"
     needs: detect
-    runs-on: ubuntu-22.04
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-22.04' }}
     timeout-minutes: 15
     steps:
       - name: Check runner resources & toolchain
@@ -104,7 +109,7 @@ jobs:
   external-deps:
     name: "#3 External Deps"
     needs: system-prep
-    runs-on: ubuntu-22.04
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-22.04' }}
     timeout-minutes: 15
     steps:
       - name: Check AnyKernel3 repo
@@ -128,7 +133,7 @@ jobs:
   patches:
     name: "#4 Patches"
     needs: external-deps
-    runs-on: ubuntu-22.04
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-22.04' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -213,7 +218,7 @@ jobs:
   kernelsu:
     name: "#5 KernelSU"
     needs: patches
-    runs-on: ubuntu-22.04
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-22.04' }}
     timeout-minutes: 15
     steps:
       - name: Resolve KernelSU version
@@ -238,7 +243,7 @@ jobs:
   build:
     name: "#6 Build"
     needs: kernelsu
-    runs-on: ubuntu-22.04
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-22.04' }}
     timeout-minutes: 330
     outputs:
       image_size: ${{ steps.build.outputs.image_size }}
@@ -255,6 +260,7 @@ jobs:
           submodules: recursive
           fetch-depth: 1
       - name: Free disk space
+        if: runner.environment == 'github-hosted'
         run: |
           set -eu
           echo "--- before ---"; df -h /
@@ -268,6 +274,7 @@ jobs:
           sudo apt-get clean || true
           echo "--- after ---"; df -h /
       - name: Install host dependencies
+        if: runner.environment == 'github-hosted'
         run: |
           set -eu
           sudo apt-get update -y
@@ -278,6 +285,9 @@ jobs:
             lz4 zstd cpio libxml2-utils xsltproc \
             python3 python3-pip python3-setuptools python3-dev \
             zlib1g-dev libbz2-dev liblz4-dev libzstd-dev
+      - name: Configure git
+        run: |
+          set -eu
           git config --global user.email "builder@example.com"
           git config --global user.name  "Builder"
           git config --global --add safe.directory "*"
@@ -502,7 +512,7 @@ jobs:
     name: "#7 Upload & Summary"
     needs: build
     if: always()
-    runs-on: ubuntu-22.04
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-22.04' }}
     timeout-minutes: 10
     steps:
       - name: Report
