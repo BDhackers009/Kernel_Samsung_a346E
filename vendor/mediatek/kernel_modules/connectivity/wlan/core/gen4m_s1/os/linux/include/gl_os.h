@@ -827,7 +827,7 @@ struct GLUE_INFO {
 	bool fgMonRetuneActive;
 	bool fgMonRetuneAborted;
 	unsigned long ulMonRetuneDeadline;
-	struct work_struct monRetuneWork;
+	struct delayed_work monRetuneWork;
 #endif
 
 	int32_t i4RssiCache[BSSID_NUM];

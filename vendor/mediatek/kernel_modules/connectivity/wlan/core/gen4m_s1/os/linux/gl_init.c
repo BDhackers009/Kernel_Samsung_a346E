@@ -3944,7 +3944,7 @@ struct wireless_dev *wlanNetCreate(void *pvData,
 #if CFG_SUPPORT_SNIFFER
 	mutex_init(&prGlueInfo->monLifecycleLock);
 	INIT_WORK(&(prGlueInfo->monWork), wlanMonWorkHandler);
-	INIT_WORK(&(prGlueInfo->monRetuneWork), wlanMonRetuneRearm);
+	INIT_DELAYED_WORK(&(prGlueInfo->monRetuneWork), wlanMonRetuneRearm);
 	skb_queue_head_init(&prGlueInfo->rMonTxQueue);
 	INIT_WORK(&(prGlueInfo->monTxWork), wlanMonTxWorkHandler);
 #endif

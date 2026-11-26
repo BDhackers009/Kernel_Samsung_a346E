@@ -8077,7 +8077,7 @@ static uint32_t wlanMonitorSetFirmware(struct GLUE_INFO *prGlueInfo,
 void wlanMonRetuneRearm(struct work_struct *work)
 {
 	struct GLUE_INFO *prGlueInfo =
-		container_of(work, struct GLUE_INFO, monRetuneWork);
+		container_of(work, struct GLUE_INFO, monRetuneWork.work);
 	struct net_device *prMonDev;
 	struct ieee80211_channel *prChan;
 	enum ENUM_BAND eBand;
