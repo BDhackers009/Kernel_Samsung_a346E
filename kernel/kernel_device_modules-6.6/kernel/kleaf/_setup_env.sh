@@ -38,7 +38,7 @@ fi
 
 if [ "x${DEBUG}" == "x1" ]
 then
-DEBUG_ARGS="--sandbox_debug --verbose_failures"
+DEBUG_ARGS="--sandbox_debug --verbose_failures ${EXTRA_KLEAF_ARGS:-}"
 fi
 if [ -z ${SANDBOX} ]
 then

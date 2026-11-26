@@ -21,6 +21,11 @@ on:
         type: boolean
         required: true
         default: false
+      fast_build:
+        description: "Disable LTO for a faster non-release build (module iteration only)"
+        type: boolean
+        required: true
+        default: false
   push:
     branches: [A346E]
   pull_request:
@@ -36,6 +41,7 @@ env:
   KSU_VAR: ${{ github.event.inputs.ksu_variant || (github.event_name == 'push' && 'KSUN') || 'NO-ROOT' }}
   PERMISSIVE: ${{ github.event.inputs.permissive || 'false' }}
   CUSTOM_PATCH: ${{ github.event.inputs.custom_patches || 'false' }}
+  EXTRA_KLEAF_ARGS: ${{ github.event.inputs.fast_build == 'true' && '--lto=none' || '' }}
 jobs:
   detect:
     name: "#1 Checkout & Detect"
