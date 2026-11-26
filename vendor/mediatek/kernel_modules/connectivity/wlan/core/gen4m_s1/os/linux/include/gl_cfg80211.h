@@ -342,6 +342,10 @@ int mtk_cfg80211_mgmt_tx_cancel_wait(struct wiphy *wiphy,
 #if CFG_SUPPORT_SNIFFER
 netdev_tx_t wlanMonXmit(struct sk_buff *prSkb, struct net_device *prDev);
 void wlanMonTxWorkHandler(struct work_struct *work);
+int mtk_cfg_set_monitor_channel(struct wiphy *wiphy,
+				struct cfg80211_chan_def *chandef);
+int mtk_cfg_get_channel(struct wiphy *wiphy, struct wireless_dev *wdev,
+			unsigned int link_id, struct cfg80211_chan_def *chandef);
 #endif
 
 #ifdef CONFIG_NL80211_TESTMODE

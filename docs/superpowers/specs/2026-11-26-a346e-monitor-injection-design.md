@@ -230,6 +230,47 @@ Fallback routes, only if explicitly approved:
 3. Test rate/channel changes and queue behavior.
 4. Remove monitor and verify normal operation.
 
+## Wifite compatibility patch 1 — channel and MAC control
+
+This patch supersedes the need for Stage 2 raw data TX for the authorized lab workflow. The verified workflow already has monitor RX, probe TX, and deauth TX. Wifite/airodump need channel control and a settable monitor MAC; EAPOL visibility is investigated separately afterward.
+
+Goals:
+1. `iw dev mon0 set channel <n>` succeeds on legal 2.4/5 GHz channels.
+2. `ip link set mon0 address <unicast-mac>` succeeds.
+3. Stage 1 monitor RX, carrier state, management TX, and Wi-Fi restoration remain unchanged.
+
+Non-goals:
+- EAPOL forwarding to `mon0`.
+- Raw data injection.
+- Any control-frame or attack automation.
+
+### Channel control
+
+- Add `mtk_cfg_set_monitor_channel(wiphy, chandef)` to `gl_cfg80211.c` and wire `.set_monitor_channel` plus `.get_channel` into both `cfg80211_ops` structures in `gl_init.c`.
+- Linux requires all running interfaces to be monitors before a channel change, so the operator must bring `wlan0`/P2P interfaces down first. This is a documented precondition, not a driver workaround.
+- Reject calls unless `fgIsCfg80211Monitor` is true and a monitor netdev exists.
+- Validate the channel with `rlmDomainIsLegalChannel()`, validate the final band/primary/SCO/width tuple with `rlmDomainIsValidRfSetting()`, and reject radar/DFS channels until supported.
+- Convert `chandef->chan` to the vendor channel/band values; use `nicFreq2ChannelNum(chan->center_freq * 1000)` and the channel band.
+- Support 20 MHz and 40 MHz widths initially; reject 5/10/80/160/80+80 widths until firmware behavior is verified. The firmware helper accepts enable, band, primary channel, width, and SCO; S1/S2 remain zero for this contract.
+- Reuse the existing `CMD_ID_SET_MONITOR` firmware path. Refactor `wlanMonitorSetFirmware()` into a configurable helper; the Stage 1 caller continues to pass the current AIS channel and 20 MHz.
+- Store the successful `cfg80211_chan_def` in `GLUE_INFO` and report it through `.get_channel`; clear it on monitor teardown. WEXT frequency queries remain AIS-specific and are not part of this patch.
+- Keep the monitor firmware enabled while changing channel (`ucEnable=1`).
+- Hold the existing monitor lifecycle mutex during the firmware command so removal cannot race the channel change.
+
+### Monitor MAC control
+
+- Add `wlanMonSetMacAddress()` to `wlan_mon_netdev_ops` as `.ndo_set_mac_address`.
+- Validate the sockaddr and reject multicast/invalid addresses.
+- Update only `mon0`'s `dev_addr` using `eth_hw_addr_set()`. Do not change the station MAC or firmware OWN MAC, because that would disrupt the connected network.
+- This is sufficient for tools that read the netdev MAC and embed it in injected frames. Firmware OWN MAC selection still comes from the BSS context, so injection acceptance remains a runtime test rather than an assumption.
+
+### Verification
+
+- Build only through GitHub Actions.
+- Compare module vermagic and `__versions` against the carrier-fix build; no unexpected CRC changes.
+- No flashing or runtime test without separate approval.
+- Runtime acceptance after deployment: bring `wlan0` down, add/up `mon0`, run `iw dev mon0 set channel 6`, `iw dev mon0 set channel 149`, confirm `iw dev mon0 info` reports each channel, run `ip link set mon0 address ...`, run `aireplay-ng --test mon0`, then delete `mon0` and confirm Wi-Fi restoration.
+
 ## Rollback
 
 - Keep the stock kernel, boot image, and WLAN module unchanged until runtime approval.
@@ -245,7 +286,7 @@ Fallback routes, only if explicitly approved:
 - Raw data frames may require STA/BSS state not present while monitoring.
 - Firmware may reject some raw frame types or rate combinations.
 - The existing sniffer redirects all RX to the monitor netdev; concurrent station/P2P/AP data reception is not supported in Stage 1.
-- Stage 1 programs the current AIS channel at 20 MHz. Changing the monitor channel through cfg80211 is not implemented yet.
+- Monitor channel changes require monitors-only running interfaces and validated legal non-DFS channels; hardware may still reject some requested channel/width combinations.
 - Source/toolchain mismatch can produce a module that builds but cannot load.
 
 ## Files expected to change

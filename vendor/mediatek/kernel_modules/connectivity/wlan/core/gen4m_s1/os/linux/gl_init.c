@@ -709,6 +709,10 @@ static struct cfg80211_ops mtk_wlan_ops = {
 	.suspend = mtk_cfg80211_suspend,
 	.resume = mtk_cfg80211_resume,
 	.change_virtual_intf = mtk_cfg80211_change_iface,
+#if CFG_SUPPORT_SNIFFER
+	.set_monitor_channel = mtk_cfg_set_monitor_channel,
+	.get_channel = mtk_cfg_get_channel,
+#endif
 	.add_key = mtk_cfg80211_add_key,
 	.get_key = mtk_cfg80211_get_key,
 	.del_key = mtk_cfg80211_del_key,
@@ -770,6 +774,10 @@ static struct cfg80211_ops mtk_cfg_ops = {
 	.add_virtual_intf = mtk_cfg_add_iface,
 	.del_virtual_intf = mtk_cfg_del_iface,
 	.change_virtual_intf = mtk_cfg_change_iface,
+#if CFG_SUPPORT_SNIFFER
+	.set_monitor_channel = mtk_cfg_set_monitor_channel,
+	.get_channel = mtk_cfg_get_channel,
+#endif
 	.add_key = mtk_cfg_add_key,
 	.get_key = mtk_cfg_get_key,
 	.del_key = mtk_cfg_del_key,
@@ -2624,10 +2632,24 @@ static int wlanMonStop(struct net_device *prDev)
 	return 0;		/* success */
 }
 
+static int wlanMonSetMacAddress(struct net_device *prDev, void *addr)
+{
+	struct sockaddr *sa = addr;
+
+	if (!prDev || !sa)
+		return -EINVAL;
+	if (!is_valid_ether_addr(sa->sa_data))
+		return -EADDRNOTAVAIL;
+
+	eth_hw_addr_set(prDev, sa->sa_data);
+	return 0;
+}
+
 static const struct net_device_ops wlan_mon_netdev_ops = {
 	.ndo_open = wlanMonOpen,
 	.ndo_stop = wlanMonStop,
 	.ndo_start_xmit = wlanMonXmit,
+	.ndo_set_mac_address = wlanMonSetMacAddress,
 };
 
 static void wlanMonNetdevDestructor(struct net_device *prDev)
@@ -2814,6 +2836,7 @@ void wlanDestroyMonitorNetdev(struct GLUE_INFO *prGlueInfo,
 	WRITE_ONCE(prGlueInfo->fgMonTxReady, FALSE);
 	WRITE_ONCE(prGlueInfo->prMonDevHandler, NULL);
 	WRITE_ONCE(prGlueInfo->fgIsCfg80211Monitor, FALSE);
+	WRITE_ONCE(prGlueInfo->fgMonChandefValid, FALSE);
 	spin_unlock_bh(&prGlueInfo->rMonTxQueue.lock);
 	mutex_unlock(&prGlueInfo->monLifecycleLock);
 

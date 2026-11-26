@@ -223,6 +223,7 @@
 #include <linux/module.h>
 #include <linux/can/netlink.h>
 #include <net/netlink.h>
+#include <net/cfg80211.h>
 
 #if IS_ENABLED(CONFIG_IPV6)
 #include <linux/ipv6.h>
@@ -820,6 +821,8 @@ struct GLUE_INFO {
 	struct sk_buff_head rMonTxQueue;
 	struct work_struct monTxWork;
 	bool fgMonTxReady;
+	struct cfg80211_chan_def rMonChandef;
+	bool fgMonChandefValid;
 #endif
 
 	int32_t i4RssiCache[BSSID_NUM];

@@ -8002,14 +8002,34 @@ int mtk_cfg_channel_switch(struct wiphy *wiphy,
 #endif
 
 #if CFG_SUPPORT_SNIFFER
+static uint32_t wlanMonitorSetFirmwareConfig(struct GLUE_INFO *prGlueInfo,
+					     bool fgEnable, enum ENUM_BAND eBand,
+					     uint8_t ucChannel,
+					     uint8_t ucChannelWidth,
+					     uint8_t ucSco)
+{
+	struct PARAM_CUSTOM_MONITOR_SET_STRUCT rMonitorSetInfo = {0};
+	uint32_t u4BufLen = 0;
+
+	if (!prGlueInfo || !prGlueInfo->prAdapter)
+		return WLAN_STATUS_INVALID_DATA;
+
+	rMonitorSetInfo.ucEnable = fgEnable ? 1 : 0;
+	rMonitorSetInfo.ucBand = eBand;
+	rMonitorSetInfo.ucPriChannel = ucChannel;
+	rMonitorSetInfo.ucSco = ucSco;
+	rMonitorSetInfo.ucChannelWidth = ucChannelWidth;
+
+	return kalIoctl(prGlueInfo, wlanoidSetMonitor, &rMonitorSetInfo,
+			sizeof(rMonitorSetInfo), FALSE, FALSE, TRUE, &u4BufLen);
+}
+
 static uint32_t wlanMonitorSetFirmware(struct GLUE_INFO *prGlueInfo,
 				       bool fgEnable)
 {
-	struct PARAM_CUSTOM_MONITOR_SET_STRUCT rMonitorSetInfo = {0};
 	struct BSS_INFO *prBssInfo;
 	enum ENUM_BAND eBand;
 	uint8_t ucChannel;
-	uint32_t u4BufLen = 0;
 
 	if (!prGlueInfo || !prGlueInfo->prAdapter)
 		return WLAN_STATUS_INVALID_DATA;
@@ -8019,21 +8039,116 @@ static uint32_t wlanMonitorSetFirmware(struct GLUE_INFO *prGlueInfo,
 	ucChannel = prBssInfo ? prBssInfo->ucPrimaryChannel : 0;
 	if (eBand == BAND_NULL)
 		eBand = ucChannel && ucChannel > 14 ? BAND_5G : BAND_2G4;
-	if (!ucChannel) {
-		if (eBand == BAND_5G)
-			ucChannel = 36;
-		else
-			ucChannel = 1;
+	if (!ucChannel)
+		ucChannel = eBand == BAND_5G ? 36 : 1;
+
+	return wlanMonitorSetFirmwareConfig(prGlueInfo, fgEnable, eBand,
+					    ucChannel, CW_20_40MHZ,
+					    CHNL_EXT_SCN);
+}
+
+int mtk_cfg_set_monitor_channel(struct wiphy *wiphy,
+				struct cfg80211_chan_def *chandef)
+{
+	struct GLUE_INFO *prGlueInfo = NULL;
+	struct ieee80211_channel *prChan;
+	enum ENUM_BAND eBand;
+	uint8_t ucChannel;
+	uint8_t ucChannelWidth;
+	uint8_t ucSco;
+	uint32_t u4Status;
+
+	if (!wiphy || !chandef || !chandef->chan)
+		return -EINVAL;
+
+	WIPHY_PRIV(wiphy, prGlueInfo);
+	if (!prGlueInfo || !prGlueInfo->u4ReadyFlag ||
+	    !READ_ONCE(prGlueInfo->fgIsCfg80211Monitor) ||
+	    !READ_ONCE(prGlueInfo->prMonDevHandler))
+		return -EINVAL;
+
+	prChan = chandef->chan;
+	if (prChan->flags & IEEE80211_CHAN_RADAR)
+		return -EOPNOTSUPP;
+
+	switch (prChan->band) {
+	case NL80211_BAND_2GHZ:
+		eBand = BAND_2G4;
+		break;
+	case NL80211_BAND_5GHZ:
+		eBand = BAND_5G;
+		break;
+#if (CFG_SUPPORT_WIFI_6G == 1)
+	case NL80211_BAND_6GHZ:
+		eBand = BAND_6G;
+		break;
+#endif
+	default:
+		return -EOPNOTSUPP;
 	}
 
-	rMonitorSetInfo.ucEnable = fgEnable ? 1 : 0;
-	rMonitorSetInfo.ucBand = eBand;
-	rMonitorSetInfo.ucPriChannel = ucChannel;
-	rMonitorSetInfo.ucSco = CHNL_EXT_SCN;
-	rMonitorSetInfo.ucChannelWidth = CW_20_40MHZ;
+	ucChannel = (uint8_t) nicFreq2ChannelNum(prChan->center_freq * 1000);
+	if (!ucChannel ||
+	    !rlmDomainIsLegalChannel(prGlueInfo->prAdapter, eBand, ucChannel))
+		return -EINVAL;
 
-	return kalIoctl(prGlueInfo, wlanoidSetMonitor, &rMonitorSetInfo,
-			sizeof(rMonitorSetInfo), FALSE, FALSE, TRUE, &u4BufLen);
+	switch (chandef->width) {
+	case NL80211_CHAN_WIDTH_20_NOHT:
+	case NL80211_CHAN_WIDTH_20:
+		ucChannelWidth = CW_20_40MHZ;
+		ucSco = CHNL_EXT_SCN;
+		break;
+	case NL80211_CHAN_WIDTH_40:
+		ucChannelWidth = CW_20_40MHZ;
+		ucSco = chandef->center_freq1 > prChan->center_freq ?
+			CHNL_EXT_SCA : CHNL_EXT_SCB;
+		break;
+	default:
+		return -EOPNOTSUPP;
+	}
+
+	if (!rlmDomainIsValidRfSetting(prGlueInfo->prAdapter, eBand, ucChannel,
+				(enum ENUM_CHNL_EXT) ucSco,
+				(enum ENUM_CHANNEL_WIDTH) ucChannelWidth, 0, 0))
+		return -EINVAL;
+
+	mutex_lock(&prGlueInfo->monLifecycleLock);
+	if (READ_ONCE(prGlueInfo->fgMonStopping) ||
+	    !READ_ONCE(prGlueInfo->fgIsCfg80211Monitor)) {
+		mutex_unlock(&prGlueInfo->monLifecycleLock);
+		return -ESHUTDOWN;
+	}
+	u4Status = wlanMonitorSetFirmwareConfig(prGlueInfo, true, eBand,
+						ucChannel, ucChannelWidth,
+						ucSco);
+	if (u4Status == WLAN_STATUS_SUCCESS) {
+		kalMemCopy(&prGlueInfo->rMonChandef, chandef,
+			   sizeof(prGlueInfo->rMonChandef));
+		prGlueInfo->fgMonChandefValid = TRUE;
+	}
+	mutex_unlock(&prGlueInfo->monLifecycleLock);
+
+	DBGLOG(REQ, INFO, "monitor channel set to %u, band %u, width %u\n",
+	       ucChannel, eBand, ucChannelWidth);
+	return u4Status == WLAN_STATUS_SUCCESS ? 0 : -EIO;
+}
+
+int mtk_cfg_get_channel(struct wiphy *wiphy, struct wireless_dev *wdev,
+			unsigned int link_id, struct cfg80211_chan_def *chandef)
+{
+	struct GLUE_INFO *prGlueInfo = NULL;
+
+	if (!wiphy || !wdev || !chandef)
+		return -EINVAL;
+
+	WIPHY_PRIV(wiphy, prGlueInfo);
+	if (!prGlueInfo || wdev->iftype != NL80211_IFTYPE_MONITOR ||
+	    !READ_ONCE(prGlueInfo->fgIsCfg80211Monitor) ||
+	    !READ_ONCE(prGlueInfo->fgMonChandefValid))
+		return -EOPNOTSUPP;
+
+	kalMemCopy(chandef, &prGlueInfo->rMonChandef, sizeof(*chandef));
+	return 0;
 }
 #endif
 
