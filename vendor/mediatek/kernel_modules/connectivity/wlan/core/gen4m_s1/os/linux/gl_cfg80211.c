@@ -8113,9 +8113,14 @@ void wlanMonRetuneRearm(struct work_struct *work)
 		return;
 	}
 
-	u4Status = wlanMonitorSetFirmwareConfig(prGlueInfo, true, eBand,
+	u4Status = wlanMonitorSetFirmwareConfig(prGlueInfo, false, eBand,
 						ucChannel, CW_20_40MHZ,
 						CHNL_EXT_SCN);
+	if (u4Status == WLAN_STATUS_SUCCESS)
+		u4Status = wlanMonitorSetFirmwareConfig(prGlueInfo, true,
+							eBand, ucChannel,
+							CW_20_40MHZ,
+							CHNL_EXT_SCN);
 	if (u4Status == WLAN_STATUS_SUCCESS)
 		WRITE_ONCE(prGlueInfo->fgMonRetuneActive, FALSE);
 	mutex_unlock(&prGlueInfo->monLifecycleLock);
