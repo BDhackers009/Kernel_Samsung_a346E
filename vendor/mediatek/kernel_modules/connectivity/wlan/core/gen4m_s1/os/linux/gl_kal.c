@@ -2166,7 +2166,7 @@ kalIndicateStatusAndComplete(IN struct GLUE_INFO
 		if (READ_ONCE(prGlueInfo->fgMonRetuneActive)) {
 			WRITE_ONCE(prGlueInfo->fgMonRetuneAborted,
 				   fgScanAborted);
-			complete_all(&prGlueInfo->rMonRetuneDone);
+			WRITE_ONCE(prGlueInfo->fgMonRetuneActive, FALSE);
 		}
 #endif
 

@@ -8081,7 +8081,6 @@ int mtk_cfg_set_monitor_channel(struct wiphy *wiphy,
 	uint8_t ucChannelWidth;
 	uint8_t ucSco;
 	uint32_t u4Status;
-	bool fgRestoreTx = FALSE;
 
 	if (!wiphy || !chandef || !chandef->chan)
 		return -EINVAL;
@@ -8142,52 +8141,41 @@ int mtk_cfg_set_monitor_channel(struct wiphy *wiphy,
 		mutex_unlock(&prGlueInfo->monLifecycleLock);
 		return -ESHUTDOWN;
 	}
-	if (prGlueInfo->prScanRequest || prGlueInfo->fgMonRetuneActive) {
+	/* A retune scan may still be in flight. Never block on it here:
+	 * cfg80211 calls this with RTNL held, and the scan-complete path
+	 * can need RTNL itself, so waiting would deadlock the whole stack.
+	 */
+	if (prGlueInfo->prScanRequest ||
+	    (READ_ONCE(prGlueInfo->fgMonRetuneActive) &&
+	     time_before(jiffies, prGlueInfo->ulMonRetuneDeadline))) {
 		mutex_unlock(&prGlueInfo->monLifecycleLock);
 		return -EBUSY;
 	}
 
 	wlanMonStopTx(prGlueInfo, prMonDev);
-	reinit_completion(&prGlueInfo->rMonRetuneDone);
-	reinit_completion(&prGlueInfo->rMonRetuneExit);
-	WRITE_ONCE(prGlueInfo->fgMonRetuneAborted, FALSE);
 	u4Status = wlanMonitorSetFirmwareConfig(prGlueInfo, true, eBand,
 						ucChannel, ucChannelWidth,
 						ucSco);
 	if (u4Status == WLAN_STATUS_SUCCESS) {
-		WRITE_ONCE(prGlueInfo->fgMonRetuneActive, TRUE);
-		u4Status = wlanMonitorRetuneByScan(prGlueInfo, eBand, ucChannel,
-						   prChan->center_freq);
-		if (u4Status != WLAN_STATUS_SUCCESS)
-			complete_all(&prGlueInfo->rMonRetuneDone);
-	}
-	mutex_unlock(&prGlueInfo->monLifecycleLock);
-
-	if (u4Status == WLAN_STATUS_SUCCESS) {
-		wait_for_completion(&prGlueInfo->rMonRetuneDone);
-		if (READ_ONCE(prGlueInfo->fgMonRetuneAborted))
-			u4Status = WLAN_STATUS_FAILURE;
-	}
-
-	mutex_lock(&prGlueInfo->monLifecycleLock);
-	if (!READ_ONCE(prGlueInfo->fgMonStopping) &&
-	    READ_ONCE(prGlueInfo->fgIsCfg80211Monitor) &&
-	    prGlueInfo->prMonDevHandler == prMonDev)
-		fgRestoreTx = TRUE;
-	if (u4Status == WLAN_STATUS_SUCCESS && fgRestoreTx) {
 		kalMemCopy(&prGlueInfo->rMonChandef, chandef,
 			   sizeof(prGlueInfo->rMonChandef));
 		prGlueInfo->fgMonChandefValid = TRUE;
+		WRITE_ONCE(prGlueInfo->fgMonRetuneAborted, FALSE);
+		WRITE_ONCE(prGlueInfo->fgMonRetuneActive, TRUE);
+		WRITE_ONCE(prGlueInfo->ulMonRetuneDeadline,
+			   jiffies + msecs_to_jiffies(700));
+		u4Status = wlanMonitorRetuneByScan(prGlueInfo, eBand, ucChannel,
+						   prChan->center_freq);
+		if (u4Status != WLAN_STATUS_SUCCESS) {
+			WRITE_ONCE(prGlueInfo->fgMonRetuneActive, FALSE);
+			prGlueInfo->fgMonChandefValid = FALSE;
+		}
 	}
 	mutex_unlock(&prGlueInfo->monLifecycleLock);
 
-	if (fgRestoreTx)
+	if (READ_ONCE(prGlueInfo->fgIsCfg80211Monitor) &&
+	    prGlueInfo->prMonDevHandler == prMonDev)
 		wlanMonStartTx(prGlueInfo, prMonDev);
-
-	mutex_lock(&prGlueInfo->monLifecycleLock);
-	WRITE_ONCE(prGlueInfo->fgMonRetuneActive, FALSE);
-	complete_all(&prGlueInfo->rMonRetuneExit);
-	mutex_unlock(&prGlueInfo->monLifecycleLock);
 
 	DBGLOG(REQ, INFO, "monitor channel set to %u, band %u, width %u, status %u\n",
 	       ucChannel, eBand, ucChannelWidth, u4Status);

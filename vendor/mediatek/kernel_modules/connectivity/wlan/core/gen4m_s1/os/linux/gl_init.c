@@ -2813,12 +2813,8 @@ void wlanDestroyMonitorNetdev(struct GLUE_INFO *prGlueInfo,
 	if (!fgRtnlLocked)
 		rtnl_lock();
 	mutex_lock(&prGlueInfo->monLifecycleLock);
-	if (prGlueInfo->fgMonRetuneActive) {
-		mutex_unlock(&prGlueInfo->monLifecycleLock);
-		wait_for_completion(&prGlueInfo->rMonRetuneDone);
-		wait_for_completion(&prGlueInfo->rMonRetuneExit);
-		mutex_lock(&prGlueInfo->monLifecycleLock);
-	}
+	if (READ_ONCE(prGlueInfo->fgMonRetuneActive))
+		WRITE_ONCE(prGlueInfo->fgMonRetuneActive, FALSE);
 	spin_lock_bh(&prGlueInfo->rMonTxQueue.lock);
 	prMonDev = prGlueInfo->prMonDevHandler;
 	if (!prMonDev) {
@@ -3946,8 +3942,6 @@ struct wireless_dev *wlanNetCreate(void *pvData,
 
 #if CFG_SUPPORT_SNIFFER
 	mutex_init(&prGlueInfo->monLifecycleLock);
-	init_completion(&prGlueInfo->rMonRetuneDone);
-	init_completion(&prGlueInfo->rMonRetuneExit);
 	INIT_WORK(&(prGlueInfo->monWork), wlanMonWorkHandler);
 	skb_queue_head_init(&prGlueInfo->rMonTxQueue);
 	INIT_WORK(&(prGlueInfo->monTxWork), wlanMonTxWorkHandler);
@@ -6844,15 +6838,12 @@ static void wlanRemove(void)
 	}
 
 #if CFG_SUPPORT_SNIFFER
-	/* Block new retunes, then drain any in-flight one while firmware events work. */
+	/* Block new retunes while the chip is being torn down. The in-flight
+	 * scan is aborted by the normal unload path, so do not wait on it.
+	 */
 	mutex_lock(&prGlueInfo->monLifecycleLock);
 	WRITE_ONCE(prGlueInfo->fgMonStopping, TRUE);
-	if (prGlueInfo->fgMonRetuneActive) {
-		mutex_unlock(&prGlueInfo->monLifecycleLock);
-		wait_for_completion(&prGlueInfo->rMonRetuneDone);
-		wait_for_completion(&prGlueInfo->rMonRetuneExit);
-		mutex_lock(&prGlueInfo->monLifecycleLock);
-	}
+	WRITE_ONCE(prGlueInfo->fgMonRetuneActive, FALSE);
 	mutex_unlock(&prGlueInfo->monLifecycleLock);
 #endif
 

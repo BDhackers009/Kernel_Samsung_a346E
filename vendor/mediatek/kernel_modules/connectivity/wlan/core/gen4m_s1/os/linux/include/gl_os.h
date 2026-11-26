@@ -825,8 +825,7 @@ struct GLUE_INFO {
 	bool fgMonChandefValid;
 	bool fgMonRetuneActive;
 	bool fgMonRetuneAborted;
-	struct completion rMonRetuneDone;
-	struct completion rMonRetuneExit;
+	unsigned long ulMonRetuneDeadline;
 #endif
 
 	int32_t i4RssiCache[BSSID_NUM];
