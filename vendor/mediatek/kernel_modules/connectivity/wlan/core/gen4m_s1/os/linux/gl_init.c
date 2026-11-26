@@ -2747,6 +2747,7 @@ void wlanMonStopTx(struct GLUE_INFO *prGlueInfo, struct net_device *prMonDev)
 		WRITE_ONCE(prGlueInfo->fgMonTxReady, FALSE);
 	spin_unlock_bh(&prGlueInfo->rMonTxQueue.lock);
 
+	netif_carrier_off(prMonDev);
 	netif_tx_disable(prMonDev);
 	cancel_work_sync(&prGlueInfo->monTxWork);
 	skb_queue_purge(&prGlueInfo->rMonTxQueue);
@@ -2770,8 +2771,10 @@ void wlanMonStartTx(struct GLUE_INFO *prGlueInfo, struct net_device *prMonDev)
 	spin_unlock_bh(&prGlueInfo->rMonTxQueue.lock);
 	mutex_unlock(&prGlueInfo->monLifecycleLock);
 
-	if (fgReady)
+	if (fgReady) {
 		netif_tx_start_all_queues(prMonDev);
+		netif_carrier_on(prMonDev);
+	}
 }
 
 void wlanDestroyMonitorNetdev(struct GLUE_INFO *prGlueInfo,
