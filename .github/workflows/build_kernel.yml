@@ -57,6 +57,7 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 1
+          clean: ${{ github.event.inputs.runner != 'fast' }}
       - name: Detect kernel tree & build options
         run: |
           set -eu
@@ -140,6 +141,7 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 1
+          clean: ${{ github.event.inputs.runner != 'fast' }}
       - name: Detect kernel dir
         run: |
           set -eu
@@ -259,6 +261,7 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 1
+          clean: ${{ github.event.inputs.runner != 'fast' }}
       - name: Free disk space
         if: runner.environment == 'github-hosted'
         run: |
