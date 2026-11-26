@@ -8147,7 +8147,8 @@ int mtk_cfg_set_monitor_channel(struct wiphy *wiphy,
 	 */
 	if (prGlueInfo->prScanRequest ||
 	    (READ_ONCE(prGlueInfo->fgMonRetuneActive) &&
-	     time_before(jiffies, prGlueInfo->ulMonRetuneDeadline))) {
+	     time_before(jiffies,
+			 READ_ONCE(prGlueInfo->ulMonRetuneDeadline)))) {
 		mutex_unlock(&prGlueInfo->monLifecycleLock);
 		return -EBUSY;
 	}
@@ -8174,7 +8175,7 @@ int mtk_cfg_set_monitor_channel(struct wiphy *wiphy,
 	mutex_unlock(&prGlueInfo->monLifecycleLock);
 
 	if (READ_ONCE(prGlueInfo->fgIsCfg80211Monitor) &&
-	    prGlueInfo->prMonDevHandler == prMonDev)
+	    READ_ONCE(prGlueInfo->prMonDevHandler) == prMonDev)
 		wlanMonStartTx(prGlueInfo, prMonDev);
 
 	DBGLOG(REQ, INFO, "monitor channel set to %u, band %u, width %u, status %u\n",
@@ -8848,7 +8849,8 @@ int mtk_cfg_scan(struct wiphy *wiphy,
 		return -EFAULT;
 	}
 #if CFG_SUPPORT_SNIFFER
-	if (READ_ONCE(prGlueInfo->fgMonRetuneActive))
+	if (READ_ONCE(prGlueInfo->fgMonRetuneActive) &&
+	    time_before(jiffies, READ_ONCE(prGlueInfo->ulMonRetuneDeadline)))
 		return -EBUSY;
 #endif
 
