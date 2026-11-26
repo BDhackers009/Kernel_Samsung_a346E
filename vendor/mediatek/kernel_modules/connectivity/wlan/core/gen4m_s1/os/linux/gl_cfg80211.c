@@ -8196,13 +8196,15 @@ int mtk_cfg_get_channel(struct wiphy *wiphy, struct wireless_dev *wdev,
 	    !READ_ONCE(prGlueInfo->fgIsCfg80211Monitor))
 		return -EOPNOTSUPP;
 
-	mutex_lock(&prGlueInfo->monLifecycleLock);
-	if (!prGlueInfo->fgMonChandefValid) {
-		mutex_unlock(&prGlueInfo->monLifecycleLock);
+	/* cfg80211 calls this from cfg80211_register_wdev() while
+	 * wlanCreateMonitorNetdev() still holds monLifecycleLock, so taking
+	 * that mutex here self-deadlocks interface creation. Read the cached
+	 * chandef without the lock; set_monitor_channel publishes it under
+	 * the lock and only ever replaces it with a fully written copy.
+	 */
+	if (!READ_ONCE(prGlueInfo->fgMonChandefValid))
 		return -EOPNOTSUPP;
-	}
 	kalMemCopy(chandef, &prGlueInfo->rMonChandef, sizeof(*chandef));
-	mutex_unlock(&prGlueInfo->monLifecycleLock);
 	return 0;
 }
 #endif
