@@ -125,9 +125,9 @@ jobs:
           set -eu
           URL="https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/dev/kernel/setup.sh"
           [ "$KSU_VAR" != KSU ] || URL="https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh"
-          curl -fsSL --retry 3 "$URL" -o /tmp/setup.sh
-          head -n 1 /tmp/setup.sh | grep -q '^#!' || { echo "::error::setup.sh does not look like a script"; exit 1; }
-          echo "setup.sh OK ($(wc -l < /tmp/setup.sh) lines) from $URL"
+          curl -fsSL --retry 3 "$URL" -o "${RUNNER_TEMP:-/tmp}/setup.sh"
+          head -n 1 "${RUNNER_TEMP:-/tmp}/setup.sh" | grep -q '^#!' || { echo "::error::setup.sh does not look like a script"; exit 1; }
+          echo "setup.sh OK ($(wc -l < "${RUNNER_TEMP:-/tmp}/setup.sh") lines) from $URL"
       - name: Summary
         run: |
           echo "### #3 External Deps - OK (${KSU_VAR})" >> "$GITHUB_STEP_SUMMARY"
@@ -193,12 +193,12 @@ jobs:
           set -eu
           check_patch() {
             local name; name=$(basename "$1")
-            if patch -p1 -d "$KDIR" --dry-run --forward --batch < "$1" > /tmp/patch.log 2>&1; then
+            if patch -p1 -d "$KDIR" --dry-run --forward --batch < "$1" > "${RUNNER_TEMP:-/tmp}/patch.log" 2>&1; then
               echo "APPLIES $name"
-            elif grep -q "Reversed (or previously applied)" /tmp/patch.log; then
+            elif grep -q "Reversed (or previously applied)" "${RUNNER_TEMP:-/tmp}/patch.log"; then
               echo "ALREADY $name"
             else
-              echo "::error::BROKEN  $name"; sed 's/^/          /' /tmp/patch.log; return 1
+              echo "::error::BROKEN  $name"; sed 's/^/          /' "${RUNNER_TEMP:-/tmp}/patch.log"; return 1
             fi
           }
           FAIL=0
@@ -230,8 +230,8 @@ jobs:
           set -eu
           REPO=https://github.com/KernelSU-Next/KernelSU-Next.git; BRANCH=dev
           [ "$KSU_VAR" != KSU ] || { REPO=https://github.com/tiann/KernelSU.git; BRANCH=main; }
-          git clone -q --branch "$BRANCH" "$REPO" /tmp/ksu
-          cd /tmp/ksu
+          git clone -q --branch "$BRANCH" "$REPO" "${RUNNER_TEMP:-/tmp}/ksu"
+          cd "${RUNNER_TEMP:-/tmp}/ksu"
           TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "$BRANCH")
           CODE=$((30000 + $(git rev-list --count HEAD)))
           SHA=$(git rev-parse --short HEAD)
@@ -321,8 +321,8 @@ jobs:
             U=https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh
           fi
           rm -rf "$D"
-          curl -LSs --retry 3 "$U" -o /tmp/ksu_setup.sh
-          $SH /tmp/ksu_setup.sh "$B"
+          curl -LSs --retry 3 "$U" -o "${RUNNER_TEMP:-/tmp}/ksu_setup.sh"
+          $SH "${RUNNER_TEMP:-/tmp}/ksu_setup.sh" "$B"
           [ -d "$D" ] || { echo "::error::$D missing after setup.sh"; exit 1; }
           cd "$D"
           KSU_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "$B")
