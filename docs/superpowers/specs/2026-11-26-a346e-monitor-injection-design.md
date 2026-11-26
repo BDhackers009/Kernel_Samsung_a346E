@@ -251,9 +251,11 @@ Non-goals:
 - Reject calls unless `fgIsCfg80211Monitor` is true and a monitor netdev exists.
 - Validate the channel with `rlmDomainIsLegalChannel()`, validate the final band/primary/SCO/width tuple with `rlmDomainIsValidRfSetting()`, and reject radar/DFS channels until supported.
 - Convert `chandef->chan` to the vendor channel/band values; use `nicFreq2ChannelNum(chan->center_freq * 1000)` and the channel band.
-- Support 20 MHz and 40 MHz widths initially; reject 5/10/80/160/80+80 widths until firmware behavior is verified. The firmware helper accepts enable, band, primary channel, width, and SCO; S1/S2 remain zero for this contract.
+- Support 20 MHz widths only; reject 40/5/10/80/160/80+80 widths until the scan-retune path is proven to preserve bandwidth. The firmware helper accepts enable, band, primary channel, width, and SCO; S1/S2 remain zero for this contract.
 - Reuse the existing `CMD_ID_SET_MONITOR` firmware path. Refactor `wlanMonitorSetFirmware()` into a configurable helper; the Stage 1 caller continues to pass the current AIS channel and 20 MHz.
-- Store the successful `cfg80211_chan_def` in `GLUE_INFO` and report it through `.get_channel`; clear it on monitor teardown. WEXT frequency queries remain AIS-specific and are not part of this patch.
+- Store the successful `cfg80211_chan_def` in `GLUE_INFO` and report it through `.get_channel`; clear it on monitor teardown.
+- `CMD_ID_SET_MONITOR` alone does not retune the radio. After it succeeds, send a passive single-channel advanced scan request through `wlanoidSetBssidListScanAdv` to retune, without setting `prGlueInfo->prScanRequest` so the normal cfg80211 scan-completion path is untouched. Live testing proved this path moves radiotap frames to the requested frequency.
+- Add a monitor-aware `wext_get_freq()` path so `SIOCGIWFREQ` returns the stored monitor frequency instead of the AIS frequency/zero. This removes the `channel -1` failure in `aireplay-ng`.
 - Keep the monitor firmware enabled while changing channel (`ucEnable=1`).
 - Hold the existing monitor lifecycle mutex during the firmware command so removal cannot race the channel change.
 

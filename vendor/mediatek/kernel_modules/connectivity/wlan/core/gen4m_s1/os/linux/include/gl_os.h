@@ -823,6 +823,10 @@ struct GLUE_INFO {
 	bool fgMonTxReady;
 	struct cfg80211_chan_def rMonChandef;
 	bool fgMonChandefValid;
+	bool fgMonRetuneActive;
+	bool fgMonRetuneAborted;
+	struct completion rMonRetuneDone;
+	struct completion rMonRetuneExit;
 #endif
 
 	int32_t i4RssiCache[BSSID_NUM];

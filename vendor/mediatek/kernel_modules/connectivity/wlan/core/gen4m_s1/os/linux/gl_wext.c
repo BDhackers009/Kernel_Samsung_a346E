@@ -1270,6 +1270,24 @@ wext_get_freq(IN struct net_device *prNetDev,
 		return -EINVAL;
 	prGlueInfo = *((struct GLUE_INFO **) netdev_priv(prNetDev));
 
+#if CFG_SUPPORT_SNIFFER
+	if (prNetDev->ieee80211_ptr &&
+	    prNetDev->ieee80211_ptr->iftype == NL80211_IFTYPE_MONITOR &&
+	    prGlueInfo) {
+		mutex_lock(&prGlueInfo->monLifecycleLock);
+		if (prGlueInfo->fgMonChandefValid &&
+		    prGlueInfo->rMonChandef.chan) {
+			prIwFreq->m =
+				(int) prGlueInfo->rMonChandef.chan->center_freq *
+				1000;
+			prIwFreq->e = 3;
+			mutex_unlock(&prGlueInfo->monLifecycleLock);
+			return 0;
+		}
+		mutex_unlock(&prGlueInfo->monLifecycleLock);
+	}
+#endif
+
 	/* GeorgeKuo: TODO skip checking in IBSS mode */
 	if (!netif_carrier_ok(prNetDev))
 		return -ENOTCONN;

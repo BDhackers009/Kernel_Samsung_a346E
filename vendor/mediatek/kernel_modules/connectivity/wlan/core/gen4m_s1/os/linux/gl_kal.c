@@ -2162,6 +2162,14 @@ kalIndicateStatusAndComplete(IN struct GLUE_INFO
 		}
 		GLUE_RELEASE_SPIN_LOCK(prGlueInfo, SPIN_LOCK_NET_DEV);
 
+#if CFG_SUPPORT_SNIFFER
+		if (READ_ONCE(prGlueInfo->fgMonRetuneActive)) {
+			WRITE_ONCE(prGlueInfo->fgMonRetuneAborted,
+				   fgScanAborted);
+			complete_all(&prGlueInfo->rMonRetuneDone);
+		}
+#endif
+
 		break;
 
 #if 0
