@@ -8070,6 +8070,65 @@ static uint32_t wlanMonitorSetFirmware(struct GLUE_INFO *prGlueInfo,
 					    CHNL_EXT_SCN);
 }
 
+/* The retune scan leaves the firmware in AIS IDLE and stops monitor RX.
+ * Re-issue the monitor firmware configuration on the requested channel to
+ * re-arm reception. Called from scan-complete and from a delayed fallback.
+ */
+void wlanMonRetuneRearm(struct work_struct *work)
+{
+	struct GLUE_INFO *prGlueInfo =
+		container_of(work, struct GLUE_INFO, monRetuneWork);
+	struct net_device *prMonDev;
+	struct ieee80211_channel *prChan;
+	enum ENUM_BAND eBand;
+	uint8_t ucChannel;
+	uint32_t u4Status;
+
+	if (!prGlueInfo)
+		return;
+
+	mutex_lock(&prGlueInfo->monLifecycleLock);
+	prMonDev = prGlueInfo->prMonDevHandler;
+	if (READ_ONCE(prGlueInfo->fgMonStopping) ||
+	    !READ_ONCE(prGlueInfo->fgIsCfg80211Monitor) ||
+	    !prMonDev || !prGlueInfo->fgMonChandefValid ||
+	    !prGlueInfo->rMonChandef.chan) {
+		mutex_unlock(&prGlueInfo->monLifecycleLock);
+		return;
+	}
+
+	prChan = prGlueInfo->rMonChandef.chan;
+	if (prChan->band == NL80211_BAND_2GHZ) {
+		eBand = BAND_2G4;
+	} else if (prChan->band == NL80211_BAND_5GHZ) {
+		eBand = BAND_5G;
+	} else {
+		mutex_unlock(&prGlueInfo->monLifecycleLock);
+		return;
+	}
+
+	ucChannel = (uint8_t) nicFreq2ChannelNum(prChan->center_freq * 1000);
+	if (!ucChannel) {
+		mutex_unlock(&prGlueInfo->monLifecycleLock);
+		return;
+	}
+
+	u4Status = wlanMonitorSetFirmwareConfig(prGlueInfo, true, eBand,
+						ucChannel, CW_20_40MHZ,
+						CHNL_EXT_SCN);
+	WRITE_ONCE(prGlueInfo->fgMonRetuneActive, FALSE);
+	mutex_unlock(&prGlueInfo->monLifecycleLock);
+
+	if (u4Status == WLAN_STATUS_SUCCESS) {
+		wlanMonStartTx(prGlueInfo, prMonDev);
+		DBGLOG(REQ, INFO,
+		       "monitor re-armed on channel %u (band %u)\n",
+		       ucChannel, eBand);
+	} else {
+		DBGLOG(REQ, WARN, "monitor re-arm failed: 0x%x\n", u4Status);
+	}
+}
+
 int mtk_cfg_set_monitor_channel(struct wiphy *wiphy,
 				struct cfg80211_chan_def *chandef)
 {
@@ -8145,12 +8204,16 @@ int mtk_cfg_set_monitor_channel(struct wiphy *wiphy,
 	 * cfg80211 calls this with RTNL held, and the scan-complete path
 	 * can need RTNL itself, so waiting would deadlock the whole stack.
 	 */
-	if (prGlueInfo->prScanRequest ||
-	    (READ_ONCE(prGlueInfo->fgMonRetuneActive) &&
-	     time_before(jiffies,
-			 READ_ONCE(prGlueInfo->ulMonRetuneDeadline)))) {
-		mutex_unlock(&prGlueInfo->monLifecycleLock);
-		return -EBUSY;
+	if (READ_ONCE(prGlueInfo->fgMonRetuneActive)) {
+		if (time_before(jiffies,
+				READ_ONCE(prGlueInfo->ulMonRetuneDeadline))) {
+			mutex_unlock(&prGlueInfo->monLifecycleLock);
+			return -EBUSY;
+		}
+		/* The scan-complete event never arrived; drop the stale flag
+		 * instead of blocking channel control forever.
+		 */
+		WRITE_ONCE(prGlueInfo->fgMonRetuneActive, FALSE);
 	}
 
 	wlanMonStopTx(prGlueInfo, prMonDev);
@@ -8170,6 +8233,11 @@ int mtk_cfg_set_monitor_channel(struct wiphy *wiphy,
 		if (u4Status != WLAN_STATUS_SUCCESS) {
 			WRITE_ONCE(prGlueInfo->fgMonRetuneActive, FALSE);
 			prGlueInfo->fgMonChandefValid = FALSE;
+		} else {
+			/* Fallback: re-arm RX even if scan-complete is lost. */
+			mod_delayed_work(system_wq,
+					 &prGlueInfo->monRetuneWork,
+					 msecs_to_jiffies(800));
 		}
 	}
 	mutex_unlock(&prGlueInfo->monLifecycleLock);

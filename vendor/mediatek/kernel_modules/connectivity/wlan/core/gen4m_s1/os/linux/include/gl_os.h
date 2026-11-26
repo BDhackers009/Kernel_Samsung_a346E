@@ -137,6 +137,7 @@
 
 #include <linux/timer.h>	/* struct timer_list */
 #include <linux/jiffies.h>	/* jiffies */
+#include <linux/workqueue.h>
 #include <linux/delay.h>	/* udelay and mdelay macro */
 #include <linux/sched.h>
 #include <linux/rtc.h>
@@ -826,6 +827,7 @@ struct GLUE_INFO {
 	bool fgMonRetuneActive;
 	bool fgMonRetuneAborted;
 	unsigned long ulMonRetuneDeadline;
+	struct work_struct monRetuneWork;
 #endif
 
 	int32_t i4RssiCache[BSSID_NUM];
@@ -1355,6 +1357,7 @@ struct net_device *wlanCreateMonitorNetdev(struct GLUE_INFO *prGlueInfo,
 					   struct wireless_dev *prWdev);
 void wlanMonStopTx(struct GLUE_INFO *prGlueInfo, struct net_device *prMonDev);
 void wlanMonStartTx(struct GLUE_INFO *prGlueInfo, struct net_device *prMonDev);
+void wlanMonRetuneRearm(struct work_struct *work);
 void wlanDestroyMonitorNetdev(struct GLUE_INFO *prGlueInfo,
 			      bool fgIsRtnlLockAcquired);
 #endif
