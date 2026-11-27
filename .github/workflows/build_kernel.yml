@@ -262,6 +262,18 @@ jobs:
           submodules: recursive
           fetch-depth: 1
           clean: ${{ github.event.inputs.runner != 'fast' }}
+      - name: Reset source tree (self-hosted)
+        if: runner.environment == 'self-hosted'
+        run: |
+          set -eu
+          # The workspace persists, and build_kernel.sh mutates it: it applies
+          # kernel patches that create untracked files (include/linux/loop.h),
+          # replaces tracked symlinks and rewrites build.sh. Re-applying those
+          # patches on top breaks the tree, so restore it to the commit while
+          # keeping only the caches.
+          git reset --hard HEAD
+          git clean -ffdx -e aosp-kernel -e out
+          echo "dirty files after reset: $(git status --porcelain | wc -l)"
       - name: Free disk space
         if: runner.environment == 'github-hosted'
         run: |
