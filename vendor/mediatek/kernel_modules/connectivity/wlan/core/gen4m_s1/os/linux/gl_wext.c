@@ -77,6 +77,10 @@
 
 #include "gl_wext.h"
 #include "gl_wext_priv.h"
+#include "gl_cfg80211.h"
+
+#include <linux/ieee80211.h>
+#include <net/cfg80211.h>
 
 #include "precomp.h"
 
@@ -1302,6 +1306,68 @@ wext_get_freq(IN struct net_device *prNetDev,
 	return 0;
 
 }				/* wext_get_freq */
+
+#if CFG_SUPPORT_SNIFFER
+static int
+wlan_mon_set_freq(IN struct net_device *prNetDev,
+		  IN struct iw_request_info *prIwReqInfo,
+		  IN struct iw_freq *prIwFreq, IN char *pcExtra)
+{
+	struct wireless_dev *prWdev;
+	struct cfg80211_chan_def rChandef = {0};
+	uint64_t u8FreqHz;
+	uint32_t u4FreqMhz;
+	int i;
+
+	if (!prNetDev || !prIwFreq)
+		return -EINVAL;
+	prWdev = prNetDev->ieee80211_ptr;
+	if (!prWdev || prWdev->iftype != NL80211_IFTYPE_MONITOR ||
+	    !prWdev->wiphy)
+		return -EOPNOTSUPP;
+
+	if (prIwFreq->e == 0) {
+		if (prIwFreq->m <= 0 || prIwFreq->m > 196)
+			return -EINVAL;
+		u4FreqMhz = ieee80211_channel_to_frequency(prIwFreq->m,
+							 NL80211_BAND_2GHZ);
+		if (!u4FreqMhz)
+			u4FreqMhz = ieee80211_channel_to_frequency(prIwFreq->m,
+								 NL80211_BAND_5GHZ);
+	} else {
+		if (prIwFreq->e > 9 || prIwFreq->m < 0)
+			return -EINVAL;
+		u8FreqHz = (uint64_t)prIwFreq->m;
+		for (i = 0; i < prIwFreq->e; i++) {
+			if (u8FreqHz > UINT64_MAX / 10)
+				return -EINVAL;
+			u8FreqHz *= 10;
+		}
+		u4FreqMhz = u8FreqHz / 1000000;
+	}
+	if (!u4FreqMhz)
+		return -EINVAL;
+
+	rChandef.chan = ieee80211_get_channel(prWdev->wiphy, u4FreqMhz);
+	if (!rChandef.chan)
+		return -EINVAL;
+	rChandef.width = NL80211_CHAN_WIDTH_20_NOHT;
+	rChandef.center_freq1 = rChandef.chan->center_freq;
+
+	return mtk_cfg_set_monitor_channel(prWdev->wiphy, &rChandef);
+}
+
+static const iw_handler mtk_mon_handler[] = {
+	IW_HANDLER(SIOCGIWNAME, std_get_name),
+	IW_HANDLER(SIOCSIWFREQ, wlan_mon_set_freq),
+	IW_HANDLER(SIOCGIWFREQ, wext_get_freq),
+};
+
+const struct iw_handler_def wlan_mon_wext_handler_def = {
+	.num_standard = (__u16) ARRAY_SIZE(mtk_mon_handler),
+	.standard = (iw_handler *)mtk_mon_handler,
+};
+#endif /* CFG_SUPPORT_SNIFFER */
 
 /*----------------------------------------------------------------------------*/
 /*!

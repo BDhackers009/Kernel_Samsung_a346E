@@ -316,6 +316,7 @@ enum {
  *******************************************************************************
  */
 extern const struct iw_handler_def wext_handler_def;
+extern const struct iw_handler_def wlan_mon_wext_handler_def;
 
 /*******************************************************************************
  *                           P R I V A T E   D A T A

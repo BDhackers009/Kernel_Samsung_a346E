@@ -2715,6 +2715,9 @@ struct net_device *wlanCreateMonitorNetdev(struct GLUE_INFO *prGlueInfo,
 	prNetDevPriv->ucBssIdx = AIS_DEFAULT_INDEX;
 
 	prMonDev->netdev_ops = &wlan_mon_netdev_ops;
+#ifdef CONFIG_WIRELESS_EXT
+	prMonDev->wireless_handlers = &wlan_mon_wext_handler_def;
+#endif
 	prMonDev->type = ARPHRD_IEEE80211_RADIOTAP;
 	prMonDev->needed_headroom = NIC_TX_DESC_AND_PADDING_LENGTH +
 				    prGlueInfo->prAdapter->chip_info->txd_append_size;
