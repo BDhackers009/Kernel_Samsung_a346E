@@ -186,9 +186,11 @@ module_param_named(ap, gprifnameap, charp, 0000);
 bool g_bRookMonBeaconUnicast;
 bool g_bRookMonAllowData;
 bool g_bRookMonRcpiLog;
+bool g_bRookMonTxOnAp;
 module_param_named(rook_mon_beacon_unicast, g_bRookMonBeaconUnicast, bool, 0600);
 module_param_named(rook_mon_allow_data, g_bRookMonAllowData, bool, 0600);
 module_param_named(rook_mon_rcpi_log, g_bRookMonRcpiLog, bool, 0600);
+module_param_named(rook_mon_tx_on_ap, g_bRookMonTxOnAp, bool, 0600);
 
 /* NIC interface name */
 #define NIC_INF_NAME    "wlan%d"

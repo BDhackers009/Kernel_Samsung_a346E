@@ -2603,8 +2603,9 @@ int mtk_cfg80211_cancel_remain_on_channel(
 	return i4Rslt;
 }
 
-int _mtk_cfg80211_mgmt_tx(struct wiphy *wiphy,
-		struct wireless_dev *wdev, struct ieee80211_channel *chan,
+static int _mtk_cfg80211_mgmt_tx_bss(struct wiphy *wiphy,
+		struct wireless_dev *wdev, uint8_t ucBssIdx,
+		struct ieee80211_channel *chan,
 		bool offchan, unsigned int wait, const u8 *buf, size_t len,
 		bool no_cck, bool dont_wait_for_ack, u64 *cookie)
 {
@@ -2673,7 +2674,7 @@ int _mtk_cfg80211_mgmt_tx(struct wiphy *wiphy,
 
 		prMsgTxReq->u8Cookie = *cookie;
 		prMsgTxReq->rMsgHdr.eMsgId = MID_MNY_AIS_MGMT_TX;
-		prMsgTxReq->ucBssIdx = wlanGetBssIdx(wdev->netdev);
+		prMsgTxReq->ucBssIdx = ucBssIdx;
 
 		pucFrameBuf =
 			(uint8_t *)
@@ -2690,7 +2691,7 @@ int _mtk_cfg80211_mgmt_tx(struct wiphy *wiphy,
 		*pu8GlCookie = *cookie;
 
 		prMgmtFrame->u2FrameLength = len;
-		prMgmtFrame->ucBssIndex = wlanGetBssIdx(wdev->netdev);
+		prMgmtFrame->ucBssIndex = ucBssIdx;
 
 #define TEMP_LOG_TEMPLATE "bssIdx: %d, band: %d, chan: %d, offchan: %d, " \
 		"wait: %d, len: %d, no_cck: %d, dont_wait_for_ack: %d, " \
@@ -2724,6 +2725,17 @@ int _mtk_cfg80211_mgmt_tx(struct wiphy *wiphy,
 	}
 
 	return i4Rslt;
+}
+
+int _mtk_cfg80211_mgmt_tx(struct wiphy *wiphy,
+		struct wireless_dev *wdev, struct ieee80211_channel *chan,
+		bool offchan, unsigned int wait, const u8 *buf, size_t len,
+		bool no_cck, bool dont_wait_for_ack, u64 *cookie)
+{
+	return _mtk_cfg80211_mgmt_tx_bss(wiphy, wdev,
+			wdev ? wlanGetBssIdx(wdev->netdev) : 0xff,
+			chan, offchan, wait, buf, len, no_cck,
+			dont_wait_for_ack, cookie);
 }
 
 /*----------------------------------------------------------------------------*/
@@ -2871,6 +2883,9 @@ void wlanMonTxWorkHandler(struct work_struct *work)
 	uint16_t u2FrameCtrl;
 	uint64_t u8Cookie;
 	int32_t i4Rslt;
+	uint8_t ucTxBssIdx;
+	bool fgNoAck;
+	struct BSS_INFO *prSapBss;
 
 	prGlueInfo = container_of(work, struct GLUE_INFO, monTxWork);
 
@@ -2900,10 +2915,29 @@ void wlanMonTxWorkHandler(struct work_struct *work)
 		     (u2FrameCtrl & IEEE80211_FCTL_FTYPE) != IEEE80211_FTYPE_DATA))
 			goto drop;
 
+		ucTxBssIdx = wlanGetBssIdx(prDev);
+		fgNoAck = false;
+		if (g_bRookMonTxOnAp) {
+			/* The monitor vif owns no BSS/WCID, so firmware drops
+			 * whatever it queues there. When the radio runs an AP,
+			 * submit on that BSS instead: it has a valid WCID and
+			 * is already tuned to the channel we are injecting on.
+			 */
+			prSapBss = cnmGetSapBssInfo(prGlueInfo->prAdapter);
+			if (prSapBss != NULL)
+				ucTxBssIdx = prSapBss->ucBssIndex;
+
+			/* Broadcast/multicast is never ACKed, so waiting for an
+			 * ACK only makes firmware discard the frame.
+			 */
+			fgNoAck = (pucFrame[4] & 0x01) ? true : false;
+		}
+
 		rParams.buf = pucFrame;
 		rParams.len = prSkb->len - u2RadiotapLen;
-		rParams.dont_wait_for_ack = false;
-		i4Rslt = _mtk_cfg80211_mgmt_tx(prWdev->wiphy, prWdev,
+		rParams.dont_wait_for_ack = fgNoAck;
+		i4Rslt = _mtk_cfg80211_mgmt_tx_bss(prWdev->wiphy, prWdev,
+					       ucTxBssIdx,
 					       rParams.chan, rParams.offchan,
 					       rParams.wait, rParams.buf, rParams.len,
 					       rParams.no_cck,
