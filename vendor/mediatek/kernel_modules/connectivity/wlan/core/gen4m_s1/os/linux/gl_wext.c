@@ -1339,10 +1339,12 @@ wlan_mon_set_freq(IN struct net_device *prNetDev,
 			return -EINVAL;
 		u8FreqHz = (uint64_t)prIwFreq->m;
 		for (i = 0; i < prIwFreq->e; i++) {
-			if (u8FreqHz > UINT64_MAX / 10)
+			if (u8FreqHz > U64_MAX / 10)
 				return -EINVAL;
 			u8FreqHz *= 10;
 		}
+		if (u8FreqHz % 1000000)
+			return -EINVAL;
 		u4FreqMhz = u8FreqHz / 1000000;
 	}
 	if (!u4FreqMhz)
@@ -1357,10 +1359,24 @@ wlan_mon_set_freq(IN struct net_device *prNetDev,
 	return mtk_cfg_set_monitor_channel(prWdev->wiphy, &rChandef);
 }
 
+static int std_mon_set_freq(struct net_device *prNetDev,
+			    struct iw_request_info *prIwReqInfo,
+			    union iwreq_data *prData, char *pcExtra)
+{
+	return wlan_mon_set_freq(prNetDev, prIwReqInfo, &prData->freq, pcExtra);
+}
+
+static int std_mon_get_freq(struct net_device *prNetDev,
+			    struct iw_request_info *prIwReqInfo,
+			    union iwreq_data *prData, char *pcExtra)
+{
+	return wext_get_freq(prNetDev, prIwReqInfo, &prData->freq, pcExtra);
+}
+
 static const iw_handler mtk_mon_handler[] = {
 	IW_HANDLER(SIOCGIWNAME, std_get_name),
-	IW_HANDLER(SIOCSIWFREQ, wlan_mon_set_freq),
-	IW_HANDLER(SIOCGIWFREQ, wext_get_freq),
+	IW_HANDLER(SIOCSIWFREQ, std_mon_set_freq),
+	IW_HANDLER(SIOCGIWFREQ, std_mon_get_freq),
 };
 
 const struct iw_handler_def wlan_mon_wext_handler_def = {

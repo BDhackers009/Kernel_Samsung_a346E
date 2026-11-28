@@ -7008,8 +7008,8 @@ aisFuncTxMgmtFrame(IN struct ADAPTER *prAdapter,
 					  ucBssIndex,
 					  prWlanHdr->aucAddr1);
 
-		fgBeacon = (prWlanHdr->u2FrameCtrl & MASK_FC_SUBTYPE) ==
-			   MAC_FRAME_BEACON;
+		fgBeacon = (prWlanHdr->u2FrameCtrl &
+			    (MASK_FC_TYPE | MASK_FC_SUBTYPE)) == MAC_FRAME_BEACON;
 		if (IS_BMCAST_MAC_ADDR(prWlanHdr->aucAddr1) &&
 		    !(g_bRookMonBeaconUnicast && fgBeacon))
 			ucStaRecIdx = STA_REC_INDEX_BMCAST;
