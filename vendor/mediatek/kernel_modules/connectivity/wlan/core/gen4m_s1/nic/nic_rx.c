@@ -76,6 +76,7 @@
 #if CFG_SUPPORT_NAN
 #include "nan_data_engine.h"
 #endif
+#include "gl_rook_diag.h"
 
 /*******************************************************************************
  *                              C O N S T A N T S
@@ -1658,6 +1659,15 @@ void nicRxProcessMonitorPacket(IN struct ADAPTER *prAdapter,
 	prRxStatus = prSwRfb->prRxStatus;
 	prRxStatusGroup2 = prSwRfb->prRxStatusGroup2;
 	prRxStatusGroup3 = prSwRfb->prRxStatusGroup3;
+
+	if (g_bRookMonRcpiLog)
+		pr_info_ratelimited("rook mon rxv: %08x %08x %08x %08x %08x %08x\n",
+				    prRxStatusGroup3->u4RxVector[0],
+				    prRxStatusGroup3->u4RxVector[1],
+				    prRxStatusGroup3->u4RxVector[2],
+				    prRxStatusGroup3->u4RxVector[3],
+				    prRxStatusGroup3->u4RxVector[4],
+				    prRxStatusGroup3->u4RxVector[5]);
 
 	/* Bit Number 30 Vendor Namespace */
 	u4VendorNsLen = sizeof(struct RADIOTAP_FIELD_VENDOR_);

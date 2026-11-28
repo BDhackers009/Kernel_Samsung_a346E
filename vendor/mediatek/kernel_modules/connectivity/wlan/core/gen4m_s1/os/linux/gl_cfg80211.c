@@ -84,6 +84,7 @@
 #include "gl_cfg80211.h"
 #include "gl_vendor.h"
 #include "gl_p2p_os.h"
+#include "gl_rook_diag.h"
 
 /*******************************************************************************
  *                              C O N S T A N T S
@@ -2894,7 +2895,9 @@ void wlanMonTxWorkHandler(struct work_struct *work)
 
 		pucFrame = prSkb->data + u2RadiotapLen;
 		u2FrameCtrl = get_unaligned_le16(pucFrame);
-		if ((u2FrameCtrl & IEEE80211_FCTL_FTYPE) != IEEE80211_FTYPE_MGMT)
+		if ((u2FrameCtrl & IEEE80211_FCTL_FTYPE) != IEEE80211_FTYPE_MGMT &&
+		    (!g_bRookMonAllowData ||
+		     (u2FrameCtrl & IEEE80211_FCTL_FTYPE) != IEEE80211_FTYPE_DATA))
 			goto drop;
 
 		rParams.buf = pucFrame;

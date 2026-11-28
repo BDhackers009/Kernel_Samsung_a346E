@@ -70,6 +70,7 @@
  */
 #include "precomp.h"
 #include "mddp.h"
+#include "gl_rook_diag.h"
 /*******************************************************************************
  *                              C O N S T A N T S
  *******************************************************************************
@@ -6972,6 +6973,7 @@ aisFuncTxMgmtFrame(IN struct ADAPTER *prAdapter,
 	struct WLAN_MAC_HEADER *prWlanHdr = (struct WLAN_MAC_HEADER *)NULL;
 	struct STA_RECORD *prStaRec = (struct STA_RECORD *)NULL;
 	uint32_t ucStaRecIdx = STA_REC_INDEX_NOT_FOUND;
+	bool fgBeacon;
 
 	do {
 		if (prMgmtTxReqInfo->fgIsMgmtTxRequested) {
@@ -7006,7 +7008,10 @@ aisFuncTxMgmtFrame(IN struct ADAPTER *prAdapter,
 					  ucBssIndex,
 					  prWlanHdr->aucAddr1);
 
-		if (IS_BMCAST_MAC_ADDR(prWlanHdr->aucAddr1))
+		fgBeacon = (prWlanHdr->u2FrameCtrl & MASK_FC_SUBTYPE) ==
+			   MAC_FRAME_BEACON;
+		if (IS_BMCAST_MAC_ADDR(prWlanHdr->aucAddr1) &&
+		    !(g_bRookMonBeaconUnicast && fgBeacon))
 			ucStaRecIdx = STA_REC_INDEX_BMCAST;
 
 		if (prStaRec)

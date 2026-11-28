@@ -81,6 +81,7 @@
 #include "gl_wext.h"
 #include "gl_cfg80211.h"
 #include "precomp.h"
+#include "gl_rook_diag.h"
 #if CFG_SUPPORT_AGPS_ASSIST
 #include "gl_kal.h"
 #endif
@@ -180,6 +181,14 @@ module_param_named(sta, gprifnamesta, charp, 0000);
 module_param_named(p2p, gprifnamep2p, charp, 0000);
 module_param_named(ap, gprifnameap, charp, 0000);
 #endif /* CFG_DRIVER_INF_NAME_CHANGE */
+
+/* Dual-band diagnostics; disabled unless explicitly enabled at runtime. */
+bool g_bRookMonBeaconUnicast;
+bool g_bRookMonAllowData;
+bool g_bRookMonRcpiLog;
+module_param_named(rook_mon_beacon_unicast, g_bRookMonBeaconUnicast, bool, 0600);
+module_param_named(rook_mon_allow_data, g_bRookMonAllowData, bool, 0600);
+module_param_named(rook_mon_rcpi_log, g_bRookMonRcpiLog, bool, 0600);
 
 /* NIC interface name */
 #define NIC_INF_NAME    "wlan%d"
